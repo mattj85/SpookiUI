@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 # --------------------------------------------------------------------------- #

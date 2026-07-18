@@ -18,18 +18,29 @@ Every option Ghostty exposes is discovered dynamically from the binary itself
 Ghostty version you have installed — nothing is hard-coded.
 
 There is also a scriptable, non-interactive CLI: `get`, `set`, `list`, `doc`,
-`reload`, `validate`, `themes`, `fonts`, `path`. Run `./spookiui.py --help`.
+`reset`, `version`, `reload`, `validate`, `themes`, `fonts`, `path`. Run
+`./spookiui.py --help`.
+
+On startup SpookiUI checks GitHub for a newer release (cached for a day; set
+SPOOKIUI_NO_UPDATE_CHECK=1 to disable) and shows a badge if one is available.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
+
+__version__ = "1.0.0"
+GITHUB_REPO = "mattj85/SpookiUI"
 
 # --------------------------------------------------------------------------- #
 #  Ghostty binary discovery
@@ -67,6 +78,120 @@ def _run(args: list[str], timeout: float = 20.0) -> subprocess.CompletedProcess:
     return subprocess.run(
         args, capture_output=True, text=True, timeout=timeout
     )
+
+
+# --------------------------------------------------------------------------- #
+#  Update check: is a newer release available on GitHub?
+# --------------------------------------------------------------------------- #
+#
+# We compare our embedded __version__ against the repo's latest GitHub Release.
+# The check is best-effort and must never get in the way: any failure (offline,
+# rate-limited, no releases yet) is swallowed silently. Results are cached for a
+# day so we don't hammer GitHub's unauthenticated 60-req/hour limit, and the
+# whole thing can be turned off with SPOOKIUI_NO_UPDATE_CHECK=1.
+
+UPDATE_CHECK_TTL = 24 * 60 * 60          # seconds between network checks
+_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
+
+
+def _update_check_disabled() -> bool:
+    return os.environ.get("SPOOKIUI_NO_UPDATE_CHECK", "").strip() not in ("", "0")
+
+
+def _cache_file() -> str:
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, "spookiui", "update-check.json")
+
+
+def _parse_version(v: str) -> tuple[int, ...]:
+    """Turn 'v1.10.2', '1.2.0-beta' etc. into a comparable numeric tuple."""
+    v = v.strip().lstrip("vV")
+    nums = re.findall(r"\d+", v.split("-")[0].split("+")[0])
+    return tuple(int(n) for n in nums) if nums else (0,)
+
+
+def is_newer(latest: str, current: str = __version__) -> bool:
+    return _parse_version(latest) > _parse_version(current)
+
+
+def _read_cache() -> dict | None:
+    try:
+        with open(_cache_file(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _write_cache(data: dict) -> None:
+    try:
+        path = _cache_file()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+    except OSError:
+        pass
+
+
+def _fetch_latest_release(timeout: float = 4.0) -> dict | None:
+    """Hit the GitHub API for the latest release. Returns None on any problem."""
+    req = urllib.request.Request(
+        _RELEASES_API,
+        headers={"Accept": "application/vnd.github+json",
+                 "User-Agent": f"SpookiUI/{__version__}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, ValueError, OSError):
+        return None
+    tag = payload.get("tag_name") or payload.get("name")
+    if not tag:
+        return None
+    return {
+        "latest": tag,
+        "url": payload.get("html_url") or _RELEASES_URL,
+        "notes": (payload.get("body") or "").strip(),
+    }
+
+
+def check_for_update(force: bool = False, now: float | None = None) -> dict | None:
+    """Return update info, cached to at most one network call per day.
+
+    Result: {latest, url, notes, current, outdated}. Returns None only when we
+    have no information at all (never checked and the network call failed). A
+    successful check that finds you're up to date returns a dict with
+    outdated=False. `force` bypasses both the opt-out and the cache TTL.
+    """
+    if _update_check_disabled() and not force:
+        return None
+    now = time.time() if now is None else now
+
+    cache = _read_cache()
+    fresh = bool(cache) and (now - cache.get("checked_at", 0) < UPDATE_CHECK_TTL)
+    if cache and fresh and not force:
+        latest = cache.get("latest")
+    else:
+        got = _fetch_latest_release()
+        if got is None:
+            if not cache:
+                return None                       # nothing to report
+            latest = cache.get("latest")          # fall back to stale cache
+        else:
+            latest = got["latest"]
+            cache = {"checked_at": now, **got}
+            _write_cache(cache)
+
+    if not latest:
+        return None
+    return {
+        "latest": latest,
+        "url": (cache or {}).get("url", _RELEASES_URL),
+        "notes": (cache or {}).get("notes", ""),
+        "current": __version__,
+        "outdated": is_newer(latest),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -870,8 +995,26 @@ class App:
         self._next_pair = 32
         self._init_colors()
 
+        # Check GitHub for a newer release in the background so startup isn't
+        # blocked on the network. Result is picked up on the next redraw.
+        self._update_info: dict | None = None
+        self._update_announced = False
+        self._start_update_check()
+
         curses.curs_set(0)
         stdscr.keypad(True)
+
+    def _start_update_check(self):
+        if _update_check_disabled():
+            return
+
+        def worker():
+            try:
+                self._update_info = check_for_update()
+            except Exception:  # noqa: BLE001 — never let the checker crash the TUI
+                self._update_info = None
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ---- colors --------------------------------------------------------- #
     def _init_colors(self):
@@ -961,6 +1104,13 @@ class App:
 
     def draw(self):
         c = self.curses
+        # Announce a newly-discovered update once, without clobbering a message
+        # the user is already looking at.
+        info = self._update_info
+        if info and info.get("outdated") and not self._update_announced:
+            self._update_announced = True
+            if not self.status:
+                self._msg(f"SpookiUI {info['latest']} is available — {info['url']}", "warn")
         self.scr.erase()
         h, w = self.dims()
         self._draw_header(w)
@@ -974,6 +1124,9 @@ class App:
         c = self.curses
         title = " SpookiUI · live Ghostty configurator "
         flags = []
+        info = self._update_info
+        if info and info.get("outdated"):
+            flags.append("⬆ UPDATE " + info["latest"])
         flags.append("AUTO-APPLY:ON" if self.sess.auto_apply else "AUTO-APPLY:OFF")
         if self.sess.dirty:
             flags.append("UNSAVED*")
@@ -1662,8 +1815,14 @@ class App:
 
     def _help(self):
         c = self.curses
+        info = self._update_info
+        update_line = (
+            f"A newer release ({info['latest']}) is available at {info['url']}"
+            if info and info.get("outdated")
+            else f"You're on the latest version (v{__version__})."
+        )
         lines = [
-            "SpookiUI — live Ghostty configurator",
+            f"SpookiUI v{__version__} — live Ghostty configurator",
             "",
             "Navigation",
             "  ↑/↓ or j/k    move            Tab      switch pane",
@@ -1694,6 +1853,8 @@ class App:
             "Live reload works by clicking Ghostty's 'Reload Configuration'",
             "menu item on macOS, or sending it SIGUSR2 on Linux. A timestamped",
             "backup of your config is made on the first change of each session.",
+            "",
+            update_line,
         ]
         self.scr.erase()
         h, w = self.dims()
@@ -1805,6 +1966,23 @@ def cli_set(sess: Session, args) -> int:
     return 0 if rok else 0
 
 
+def cli_version(sess: Session, args) -> int:
+    print(f"SpookiUI v{__version__}")
+    if args.no_check:
+        return 0
+    info = check_for_update(force=True)
+    if info is None:
+        print("update check: no published release found (or GitHub unreachable)",
+              file=sys.stderr)
+        return 0
+    if info["outdated"]:
+        print(f"a newer release is available: {info['latest']}")
+        print(f"  {info['url']}")
+    else:
+        print("you're on the latest release")
+    return 0
+
+
 def cli_reset(sess: Session, args) -> int:
     if not args.yes:
         print("This clears your config file and restores every Ghostty default.\n"
@@ -1854,6 +2032,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="spookiui",
         description="Live configurator for the Ghostty terminal. Run with no "
                     "subcommand to launch the interactive TUI.")
+    p.add_argument("-V", "--version", action="version",
+                   version=f"SpookiUI v{__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     sp = sub.add_parser("list", help="list options (optionally by category)")
@@ -1875,6 +2055,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("value", nargs="+", help="value(s); repeat for list options")
     sp.add_argument("--no-reload", action="store_true", help="write without live reload")
     sp.set_defaults(func=cli_set)
+
+    sp = sub.add_parser("version", help="print the version and check GitHub for updates")
+    sp.add_argument("--no-check", action="store_true", help="don't contact GitHub")
+    sp.set_defaults(func=cli_version)
 
     sp = sub.add_parser("reset", help="restore Ghostty defaults (clears your config file)")
     sp.add_argument("--yes", action="store_true", help="confirm the reset (required)")

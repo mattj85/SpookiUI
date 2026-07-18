@@ -63,6 +63,11 @@ ok "Python: $PYTHON ($("$PYTHON" -c 'import platform; print(platform.python_vers
 # Compile-check the script so a broken checkout fails loudly here, not later.
 "$PYTHON" -m py_compile "$SRC" && ok "spookiui.py compiles cleanly"
 
+# Read the version straight from the script (authoritative single source).
+# \x27 is a single quote — used so this whole program can stay single-quoted.
+VERSION="$("$PYTHON" -c 'import re,sys; m=re.search(r"^__version__\s*=\s*[\"\x27]([^\"\x27]+)", open(sys.argv[1]).read(), re.M); print(m.group(1) if m else "")' "$SRC" 2>/dev/null || true)"
+[ -n "$VERSION" ] && ok "SpookiUI version: $VERSION"
+
 # --------------------------------------------------------------------------- #
 #  3. Check for the ghostty binary (runtime dependency)
 # --------------------------------------------------------------------------- #
@@ -102,7 +107,7 @@ fi
 case ":$PATH:" in
     *":$BIN_DIR:"*)
         ok "$BIN_DIR is on your PATH"
-        printf '\n%s\n' "${GREEN}${BOLD}Done.${RESET} Run ${BOLD}spookiui${RESET} to launch, or ${BOLD}spookiui --help${RESET} for the CLI."
+        printf '\n%s\n' "${GREEN}${BOLD}Done${RESET}${GREEN} (SpookiUI ${VERSION:-?}).${RESET} Run ${BOLD}spookiui${RESET} to launch, or ${BOLD}spookiui --help${RESET} for the CLI."
         ;;
     *)
         warn "$BIN_DIR is not on your PATH yet."

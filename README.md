@@ -127,6 +127,7 @@ Everything the TUI does is also available non-interactively:
 ./spookiui.py set   <key> <value>… # set (writes + reloads live); repeat value for lists
 ./spookiui.py set   <key> <v> --no-reload   # write without reloading
 ./spookiui.py reset --yes          # clear config & restore all Ghostty defaults (backup kept)
+./spookiui.py version              # print version & check GitHub for a newer release
 ./spookiui.py reload               # trigger a live reload
 ./spookiui.py validate             # validate the current config
 ./spookiui.py themes               # list installed themes
@@ -159,3 +160,18 @@ Examples:
   clearly-marked `# added by SpookiUI` section.
 - The config path is auto-detected (`$XDG_CONFIG_HOME/ghostty/config`, then
   `~/.config/ghostty/config`, then the macOS app-support path).
+
+## Update notifications
+
+On startup SpookiUI quietly checks GitHub for a newer release. If one exists, the
+TUI shows a `⬆ UPDATE vX.Y.Z` badge in the header (and the release URL on the
+status line); the help screen (`?`) always shows your current version. Run
+`spookiui version` any time to check on demand.
+
+The check is **best-effort and non-blocking** — it runs on a background thread,
+times out quickly, and stays silent if you're offline or GitHub is unreachable.
+The result is cached for a day (under `$XDG_CACHE_HOME/spookiui/`) so it never
+hammers the API. To turn it off entirely, set `SPOOKIUI_NO_UPDATE_CHECK=1`.
+
+Maintainers: notifications only fire once a matching **GitHub Release** is
+published — see [`RELEASING.md`](RELEASING.md) for the bump-and-release flow.

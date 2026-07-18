@@ -77,6 +77,28 @@ only ever see what's relevant to the machine you're on.
 - **Live preview:** while picking a theme, font, or enum value, each highlighted
   option is applied as you scroll — cancel and it snaps back to where you were.
 
+## Live reload by platform
+
+Ghostty can't watch its config file for changes, so SpookiUI triggers the reload
+for you. How that happens — and what it needs — depends on your OS:
+
+| Platform | How the reload fires | Requirements |
+| --- | --- | --- |
+| **macOS** | Clicks the **Reload Configuration** menu item via AppleScript (`osascript`) | Ghostty must be running; your terminal needs **Accessibility** permission (*System Settings → Privacy & Security → Accessibility*). Ghostty is located on `PATH` or at `/Applications/Ghostty.app`. |
+| **Linux** | Sends **`SIGUSR2`** to the running Ghostty process(es), which Ghostty reloads on | Ghostty must be running; `pgrep` (from `procps`/`procps-ng`, present on essentially every distro) is used to find it. No extra permission needed. Works on any distribution — detection is generic (`sys.platform`), with no distro-specific code. |
+| **Other** | *No auto-reload* — the file is still written and validated | Trigger your own `reload_config` keybind in Ghostty to apply. |
+
+On **Linux**, Ghostty is found via `PATH` (`shutil.which`), falling back to
+`/usr/bin/ghostty` and `/usr/local/bin/ghostty`. Only Python 3.8+ (standard
+library) and the `ghostty` binary are required; live reload additionally needs
+`pgrep` and a running Ghostty instance.
+
+If a reload can't be triggered (Ghostty isn't running, missing permission, or an
+unsupported platform), your change is **still written and validated safely** —
+SpookiUI just tells you to reload manually. A few options (e.g. `language`) can't
+be applied without a restart at all; the UI flags these as *needs restart* /
+*new windows only* so there are no surprises.
+
 ## The TUI
 
 ```
@@ -164,15 +186,9 @@ Examples:
 
 ## Notes & limitations
 
-- **Live reload works on macOS and Linux.** On macOS it clicks the app's menu
-  item and needs Accessibility permission for your terminal (*System Settings →
-  Privacy & Security → Accessibility*). On Linux it sends `SIGUSR2` to the
-  running Ghostty process, which reloads its config on that signal — no extra
-  permission needed. On any other platform the file is still written and
-  validated; trigger your own `reload_config` keybind to apply. A few options
-  (e.g. `language`) are flagged in the UI as *needs restart* / *new windows only*
-  because Ghostty can't apply them without a restart; SpookiUI marks these
-  so there are no surprises.
+- **Live reload works on macOS and Linux** (and degrades safely elsewhere) — see
+  [Live reload by platform](#live-reload-by-platform) above for the per-OS
+  mechanism and requirements.
 - Edits to single-value options are made **in place**, preserving your file's
   comments and layout. New options and list options are written under a
   clearly-marked `# added by SpookiUI` section.

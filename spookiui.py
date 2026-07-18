@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -193,6 +193,18 @@ def _git_checkout_root(path: str) -> str | None:
         d = parent
 
 
+def _is_homebrew_install(path: str) -> bool:
+    """Whether `path` is a Homebrew-managed copy (in a Cellar / brew prefix).
+    Such installs must be updated with `brew upgrade`, not in place."""
+    rp = os.path.realpath(path)
+    if f"{os.sep}Cellar{os.sep}" in rp:
+        return True
+    prefix = os.environ.get("HOMEBREW_PREFIX")
+    if prefix and rp.startswith(os.path.realpath(prefix) + os.sep):
+        return True
+    return False
+
+
 def _download_release_source(tag: str, timeout: float = 20.0) -> str | None:
     url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/spookiui.py"
     req = urllib.request.Request(
@@ -256,6 +268,10 @@ def self_update() -> tuple[bool, str]:
         return True, f"already up to date (v{__version__})"
     tag = info["latest"]
     path = self_path()
+
+    if _is_homebrew_install(path):
+        return False, (f"installed via Homebrew — run `brew upgrade spookiui` to "
+                       f"get {tag}")
 
     repo = _git_checkout_root(path)
     if repo:
@@ -2977,13 +2993,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
     if GHOSTTY is None:
         print("error: could not find the `ghostty` executable.", file=sys.stderr)
         print("Install Ghostty or add it to your PATH.", file=sys.stderr)
         return 3
-
-    parser = build_parser()
-    args = parser.parse_args(argv)
 
     try:
         sess = Session()

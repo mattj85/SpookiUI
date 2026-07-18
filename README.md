@@ -39,6 +39,18 @@ The installer verifies Python 3.8+, checks for the `ghostty` binary (warning
 with install hints if it's missing), and symlinks `spookiui.py` into your bin
 directory. After it runs, `spookiui` and `spookiui --help` work from anywhere.
 
+### Homebrew (macOS & Linux)
+
+A Homebrew formula lives in [`homebrew/spookiui.rb`](homebrew/spookiui.rb). Once
+it's published to a tap repo named `homebrew-spookiui`, install with:
+
+```bash
+brew install mattj85/spookiui/spookiui
+```
+
+Homebrew installs are updated with `brew upgrade spookiui`; the in-app updater
+detects a Homebrew install and defers to it.
+
 ## Why it exists
 
 Ghostty is configured through a plain-text file (`~/.config/ghostty/config`) and
@@ -250,3 +262,7 @@ Restart SpookiUI afterwards to run the new version.
 Maintainers: notifications and updates only pick up a version once a matching
 **GitHub Release** is published — see [`RELEASING.md`](RELEASING.md) for the
 bump-and-release flow.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

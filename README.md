@@ -122,6 +122,8 @@ be applied without a restart at all; the UI flags these as *needs restart* /
 | `R` | revert everything to session start |
 | `X` | wipe config & restore **all** Ghostty defaults (backup kept) |
 | `U` | update SpookiUI in place to the latest release |
+| `p` | **profiles** — save / load / delete named configs · `t` toggles light↔dark |
+| `c` | **config check** (doctor) — health-check for issues |
 | `d` | show everything you've changed |
 | `?` | help · `q` quit |
 
@@ -156,6 +158,22 @@ style (`official`, `blueprint`, `chalkboard`, `microchip`, `glass`,
 (which get live swatches). See the icon gallery at
 <https://noahskelton.github.io/ghostty-icons/>.
 
+## Profiles & the config doctor
+
+**Profiles** are named snapshots of your whole config — press `p` in the TUI (or
+use `spookiui profile …`) to save the current setup, then load it back later.
+Save a `light` and a `dark` profile and the `t` key (or `spookiui profile
+toggle`) flips between them instantly. Loading a profile is validated and backs
+up your current config first, like every other change. Profiles live in
+`$XDG_DATA_HOME/spookiui/profiles` (`~/.local/share/…` by default), outside
+Ghostty's own config dir so it never reads them.
+
+**`spookiui doctor`** (or `c` in the TUI) health-checks your config and reports:
+invalid settings, unknown/typo'd options, options set more than once (dead
+lines), settings that just repeat a default, and keybind triggers bound twice or
+shadowing a Ghostty default. Findings are grouped by severity; it exits non-zero
+when there are errors, so it drops cleanly into a pre-commit hook for dotfiles.
+
 ## Scriptable CLI
 
 Everything the TUI does is also available non-interactively:
@@ -170,6 +188,11 @@ Everything the TUI does is also available non-interactively:
 ./spookiui.py reset --yes          # clear config & restore all Ghostty defaults (backup kept)
 ./spookiui.py version              # print version & check GitHub for a newer release
 ./spookiui.py update               # update in place to the latest release (git pull or download)
+./spookiui.py profile save <name>  # snapshot the current config as a named profile
+./spookiui.py profile load <name>  # apply a saved profile (validated, backed up)
+./spookiui.py profile list         # list saved profiles  (also: show / delete / toggle)
+./spookiui.py profile toggle       # flip between the 'light' and 'dark' profiles
+./spookiui.py doctor               # health-check the config (duplicates, unknown keys, keybind clashes…)
 ./spookiui.py reload               # trigger a live reload
 ./spookiui.py validate             # validate the current config
 ./spookiui.py themes               # list installed themes

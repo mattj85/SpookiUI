@@ -18,8 +18,8 @@ Every option Ghostty exposes is discovered dynamically from the binary itself
 Ghostty version you have installed — nothing is hard-coded.
 
 There is also a scriptable, non-interactive CLI: `get`, `set`, `list`, `doc`,
-`reset`, `version`, `update`, `reload`, `validate`, `themes`, `fonts`, `path`.
-Run `./spookiui.py --help`.
+`reset`, `version`, `update`, `profile`, `doctor`, `reload`, `validate`,
+`themes`, `fonts`, `path`. Run `./spookiui.py --help`.
 
 On startup SpookiUI checks GitHub for a newer release (cached for a day; set
 SPOOKIUI_NO_UPDATE_CHECK=1 to disable) and shows a badge if one is available.
@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -1132,6 +1132,179 @@ class Session:
                     out.append((name, self.effective(name)))
         return out
 
+    def save_profile(self, name: str) -> tuple[bool, str]:
+        """Snapshot the current config to a named profile."""
+        name = name.strip()
+        if not _PROFILE_NAME_RE.match(name):
+            return False, "invalid name — use letters, numbers, . _ -"
+        text = self.cfg.render()
+        if not text.endswith("\n"):
+            text += "\n"
+        try:
+            os.makedirs(profiles_dir(), exist_ok=True)
+            with open(profile_path(name), "w", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError as e:
+            return False, f"could not save profile: {e}"
+        return True, f"saved profile '{name}'"
+
+    def load_profile(self, name: str) -> tuple[bool, str]:
+        """Apply a named profile: validate, back up, write, reload, rollback on
+        failure — the same discipline as every other mutation path."""
+        path = profile_path(name)
+        if not os.path.isfile(path):
+            return False, f"no profile named '{name}'"
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as e:
+            return False, f"could not read profile: {e}"
+        ok, errs = validate(text)
+        if not ok:
+            return False, "profile invalid: " + (errs[0] if errs else "validation failed")
+        self.ensure_backup()
+        self.cfg.lines = text.split("\n")
+        self.cfg.write(text)
+        self.dirty = False
+        if self.auto_apply and CAN_RELOAD:
+            r_ok, msg = reload_ghostty()
+            return True, f"loaded profile '{name}'" + ("" if r_ok else f" (reload: {msg})")
+        return True, f"loaded profile '{name}'"
+
+    def delete_profile(self, name: str) -> tuple[bool, str]:
+        path = profile_path(name)
+        if not os.path.isfile(path):
+            return False, f"no profile named '{name}'"
+        try:
+            os.remove(path)
+        except OSError as e:
+            return False, f"could not delete profile: {e}"
+        return True, f"deleted profile '{name}'"
+
+    def toggle_light_dark(self) -> tuple[bool, str]:
+        """Flip between the profiles named 'light' and 'dark'."""
+        if not (os.path.isfile(profile_path("light"))
+                and os.path.isfile(profile_path("dark"))):
+            return False, "save profiles named 'light' and 'dark' first"
+        try:
+            with open(profile_path("dark"), encoding="utf-8") as fh:
+                dark_text = fh.read().strip()
+        except OSError:
+            dark_text = None
+        target = "light" if self.cfg.render().strip() == dark_text else "dark"
+        return self.load_profile(target)
+
+
+def profiles_dir() -> str:
+    """Where named config snapshots live (cross-platform, outside Ghostty's
+    own config dir so Ghostty never reads them)."""
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "spookiui", "profiles")
+
+
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def profile_path(name: str) -> str:
+    return os.path.join(profiles_dir(), name)
+
+
+def list_profiles() -> list[str]:
+    try:
+        return sorted(
+            f for f in os.listdir(profiles_dir())
+            if _PROFILE_NAME_RE.match(f)
+            and os.path.isfile(os.path.join(profiles_dir(), f)))
+    except OSError:
+        return []
+
+
+_DEFAULT_KEYBINDS_CACHE: dict[str, str] | None = None
+
+
+def _split_keybind(entry: str) -> tuple[str, str]:
+    """Split a `trigger=action` keybind. Actions never contain `=`, so the last
+    `=` is the separator — this handles triggers that include the `=` key
+    (e.g. `super+==increase_font_size`)."""
+    trigger, sep, action = entry.rpartition("=")
+    return (trigger, action) if sep else (entry, "")
+
+
+def list_default_keybinds() -> dict[str, str]:
+    """Ghostty's built-in keybinds as {trigger: action} (for conflict checks)."""
+    global _DEFAULT_KEYBINDS_CACHE
+    if _DEFAULT_KEYBINDS_CACHE is not None:
+        return _DEFAULT_KEYBINDS_CACHE
+    res: dict[str, str] = {}
+    if GHOSTTY:
+        proc = _run([GHOSTTY, "+list-keybinds"], timeout=20)
+        for line in (proc.stdout or "").splitlines():
+            line = line.strip()
+            if not line.startswith("keybind"):
+                continue
+            _, _, rhs = line.partition("=")
+            trig, act = _split_keybind(rhs.strip())
+            if trig:
+                res[trig] = act
+    _DEFAULT_KEYBINDS_CACHE = res
+    return res
+
+
+def run_doctor(sess: "Session") -> list[tuple[str, str]]:
+    """Health-check the config. Returns (severity, message) pairs where
+    severity is error / warn / info / ok, most serious first."""
+    cfg, schema = sess.cfg, sess.schema
+    errors, warns, infos = [], [], []
+
+    ok, errs = validate(cfg.render())
+    if not ok:
+        for e in errs:
+            errors.append(("error", "invalid config: " + e))
+
+    present: dict[str, list[int]] = {}
+    for i in range(len(cfg.lines)):
+        kv = cfg._key_at(i)
+        if kv:
+            present.setdefault(kv[0], []).append(i)
+
+    for name in sorted(present):
+        if name not in schema:
+            warns.append(("warn", f"unknown option `{name}` — not recognised by "
+                          "your Ghostty (a typo or removed option?)"))
+
+    for name in sorted(present):
+        opt = schema.get(name)
+        if opt and not opt.is_list and len(present[name]) > 1:
+            warns.append(("warn", f"`{name}` is set {len(present[name])}× — only the "
+                          "last takes effect; the earlier ones are dead"))
+
+    for name in sorted(present):
+        opt = schema.get(name)
+        if opt is not None and not sess.is_overridden(name):
+            infos.append(("info", f"`{name}` is set to its default — redundant, "
+                          "can be removed"))
+
+    triggers: dict[str, list[str]] = {}
+    for entry in cfg.get_values("keybind"):
+        trig, _ = _split_keybind(entry)
+        triggers.setdefault(trig, []).append(entry)
+    for trig, entries in triggers.items():
+        if len(entries) > 1:
+            warns.append(("warn", f"keybind trigger `{trig}` is bound {len(entries)}× "
+                          "— the later binding shadows the earlier"))
+    defaults = list_default_keybinds()
+    for trig, entries in triggers.items():
+        if trig in defaults:
+            _, act = _split_keybind(entries[-1])
+            if act and act != defaults[trig]:
+                infos.append(("info", f"keybind `{trig}` overrides Ghostty's default "
+                              f"(default is `{defaults[trig]}`)"))
+
+    findings = errors + warns + infos
+    if not findings:
+        findings = [("ok", "no issues found — config looks healthy")]
+    return findings
+
 
 _HEX_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
 
@@ -1631,6 +1804,12 @@ class App:
             return True
         if ch in (ord("U"),):
             self._do_self_update()
+            return True
+        if ch in (ord("p"), ord("P")):
+            self._profiles_overlay()
+            return True
+        if ch in (ord("c"), ord("C")):
+            self._doctor_overlay()
             return True
         if ch in (ord("["),):
             self.doc_scroll = max(0, self.doc_scroll - 1); return True
@@ -2367,6 +2546,102 @@ class App:
         self.scr.refresh()
         self.scr.getch()
 
+    def _profiles_overlay(self):
+        c = self.curses
+        sel = 0
+        while True:
+            profiles = list_profiles()
+            sel = max(0, min(sel, len(profiles) - 1)) if profiles else 0
+            self.scr.erase()
+            h, w = self.dims()
+            self.safe(0, 0, " profiles ".ljust(w), c.color_pair(1) | c.A_BOLD)
+            self.safe(1, 0, (" saved in " + profiles_dir())[:w], c.color_pair(4))
+            top = 3
+            if not profiles:
+                self.safe(top, 2, "(no profiles yet — press 's' to save the current config)",
+                          c.color_pair(4))
+            for i, p in enumerate(profiles):
+                y = top + i
+                if y >= h - 2:
+                    break
+                attr = c.color_pair(3) | c.A_BOLD if i == sel else c.A_NORMAL
+                self.safe(y, 2, ("→ " if i == sel else "  ") + p, attr)
+            self.safe(h - 1, 0,
+                      " s save · Enter/l load · d delete · t light↔dark · Esc close ".ljust(w),
+                      c.color_pair(1))
+            self.scr.refresh()
+            ch = self.scr.getch()
+            if ch in (27,):
+                return
+            if ch in (c.KEY_UP, ord("k")):
+                sel = max(0, sel - 1)
+            elif ch in (c.KEY_DOWN, ord("j")):
+                sel = min(max(0, len(profiles) - 1), sel + 1)
+            elif ch in (ord("s"),):
+                name = self._line_editor(
+                    "save profile as › ", "",
+                    hint="name (letters/numbers/._-) · Enter save · Esc cancel")
+                if name:
+                    ok, m = self.sess.save_profile(name)
+                    self._msg(m, "ok" if ok else "error")
+            elif ch in (ord("d"), c.KEY_DC) and profiles:
+                if self._confirm(f"Delete profile '{profiles[sel]}'?"):
+                    ok, m = self.sess.delete_profile(profiles[sel])
+                    self._msg(m, "ok" if ok else "error")
+            elif ch in (ord("t"),):
+                ok, m = self.sess.toggle_light_dark()
+                self._msg(m, "ok" if ok else "warn")
+                if ok:
+                    return
+            elif ch in (ord("\n"), c.KEY_ENTER, 10, 13, ord("l")) and profiles:
+                if self._confirm(f"Load '{profiles[sel]}'? (current config backed up)"):
+                    ok, m = self.sess.load_profile(profiles[sel])
+                    self._msg(m, "ok" if ok else "error")
+                    if ok:
+                        return
+
+    def _doctor_overlay(self):
+        c = self.curses
+        self._msg("running config check…", "info"); self.draw()
+        findings = run_doctor(self.sess)
+        colors = {"error": 7, "warn": 8, "info": 4, "ok": 6}
+        icons = {"error": "✗", "warn": "!", "info": "·", "ok": "✓"}
+        scroll = 0
+        while True:
+            self.scr.erase()
+            h, w = self.dims()
+            n_err = sum(1 for s, _ in findings if s == "error")
+            n_warn = sum(1 for s, _ in findings if s == "warn")
+            self.safe(0, 0, f" config check · {n_err} error(s), {n_warn} warning(s) ".ljust(w),
+                      c.color_pair(1) | c.A_BOLD)
+            wrapped = []
+            for sev, msg in findings:
+                for j, seg in enumerate(self._wrap(msg, w - 6)):
+                    wrapped.append((sev, (icons.get(sev, " ") + " " if j == 0 else "  ") + seg))
+            rows = h - 3
+            for r in range(rows):
+                i = scroll + r
+                if i >= len(wrapped):
+                    break
+                sev, text = wrapped[i]
+                attr = c.color_pair(colors.get(sev, 4))
+                if sev in ("error", "warn"):
+                    attr |= c.A_BOLD
+                self.safe(2 + r, 2, text[:w - 3], attr)
+            self.safe(h - 1, 0, " ↑↓ scroll · any other key to close ".ljust(w), c.color_pair(1))
+            self.scr.refresh()
+            ch = self.scr.getch()
+            if ch in (c.KEY_DOWN,):
+                scroll = min(max(0, len(wrapped) - rows), scroll + 1)
+            elif ch in (c.KEY_UP,):
+                scroll = max(0, scroll - 1)
+            elif ch in (c.KEY_NPAGE,):
+                scroll = min(max(0, len(wrapped) - rows), scroll + rows)
+            elif ch in (c.KEY_PPAGE,):
+                scroll = max(0, scroll - rows)
+            else:
+                return
+
     def _help(self):
         c = self.curses
         info = self._update_info
@@ -2403,6 +2678,8 @@ class App:
             "  R   revert everything to session start",
             "  X   wipe config & restore all Ghostty defaults (backup kept)",
             "  U   update SpookiUI in place to the latest release",
+            "  p   profiles — save / load / delete named configs, light↔dark",
+            "  c   config check — health-check for issues (doctor)",
             "  d   show what you've changed",
             "  q   quit",
             "",
@@ -2588,6 +2865,50 @@ def cli_path(sess: Session, args) -> int:
     return 0
 
 
+def cli_profile(sess: Session, args) -> int:
+    act = args.action
+    if act == "list":
+        ps = list_profiles()
+        if not ps:
+            print("no profiles saved", file=sys.stderr)
+            return 0
+        for p in ps:
+            print(p)
+        return 0
+    if act == "toggle":
+        ok, m = sess.toggle_light_dark()
+        print(m, file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 1
+    if not args.name:
+        print(f"'{act}' needs a profile name", file=sys.stderr)
+        return 2
+    if act == "show":
+        path = profile_path(args.name)
+        if not os.path.isfile(path):
+            print(f"no profile named '{args.name}'", file=sys.stderr)
+            return 1
+        with open(path, encoding="utf-8") as fh:
+            sys.stdout.write(fh.read())
+        return 0
+    fn = {"save": sess.save_profile, "load": sess.load_profile,
+          "delete": sess.delete_profile}[act]
+    ok, m = fn(args.name)
+    print(m, file=sys.stdout if ok else sys.stderr)
+    return 0 if ok else 1
+
+
+def cli_doctor(sess: Session, args) -> int:
+    findings = run_doctor(sess)
+    icons = {"error": "✗", "warn": "!", "info": "·", "ok": "✓"}
+    n_err = sum(1 for s, _ in findings if s == "error")
+    n_warn = sum(1 for s, _ in findings if s == "warn")
+    for sev, msg in findings:
+        print(f"{icons.get(sev, ' ')} {msg}",
+              file=sys.stderr if sev == "error" else sys.stdout)
+    print(f"\n{n_err} error(s), {n_warn} warning(s)")
+    return 1 if n_err else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="spookiui",
@@ -2642,6 +2963,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("path", help="print the config file path in use")
     sp.set_defaults(func=cli_path)
+
+    sp = sub.add_parser("profile", help="save/load named config snapshots")
+    sp.add_argument("action",
+                    choices=["save", "load", "list", "delete", "toggle", "show"])
+    sp.add_argument("name", nargs="?", help="profile name (not needed for list/toggle)")
+    sp.set_defaults(func=cli_profile)
+
+    sp = sub.add_parser("doctor", help="health-check the config for issues")
+    sp.set_defaults(func=cli_doctor)
     return p
 
 

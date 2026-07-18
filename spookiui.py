@@ -468,6 +468,11 @@ CATEGORY_ORDER = [
     "Keybindings", "macOS", "Linux / GTK", "Advanced",
 ]
 
+# A synthetic left-pane category that isn't schema-backed: it lists one-shot
+# maintenance actions (e.g. Fix SSH) instead of Ghostty options. Opening it
+# (Enter/→) launches the Utils menu overlay.
+UTILS_CATEGORY = "⚙ Utils"
+
 
 def _categorize(name: str) -> str:
     n = name
@@ -1532,6 +1537,7 @@ class App:
             if names:
                 self.by_cat[c] = names
         self.categories = [c for c in CATEGORY_ORDER if c in self.by_cat]
+        self.categories.append(UTILS_CATEGORY)
 
         self._swatch_cache: dict[int, int] = {}
         self._pair_cache: dict[tuple, int] = {}
@@ -1702,12 +1708,20 @@ class App:
         except self.curses.error:
             pass
 
+    def cur_cat(self) -> str | None:
+        if self.search_mode or not self.categories:
+            return None
+        return self.categories[self.cat_idx]
+
     def current_names(self) -> list[str]:
         if self.search_mode:
             return self._search_results
         if not self.categories:
             return []
-        return self.by_cat[self.categories[self.cat_idx]]
+        cat = self.categories[self.cat_idx]
+        if cat == UTILS_CATEGORY:
+            return []
+        return self.by_cat[cat]
 
     def current_option(self) -> Option | None:
         names = self.current_names()
@@ -1781,6 +1795,11 @@ class App:
         for y in range(top, bottom + 1):
             self.safe(y, cat_w, "│", c.color_pair(4))
             self.safe(y, cat_w + opt_w, "│", c.color_pair(4))
+
+        if self.cur_cat() == UTILS_CATEGORY:
+            self._draw_utils_menu(top, bottom, cat_w, opt_w)
+            self._draw_utils_detail(top, bottom, det_x, w - det_x - 1)
+            return
 
         names = self.current_names()
         rows = bottom - top + 1
@@ -1981,7 +2000,10 @@ class App:
             self.cat_idx = (self.cat_idx + 1) % len(self.categories)
             self.opt_idx = self.opt_scroll = self.doc_scroll = 0
         elif ch in (c.KEY_RIGHT, ord("l"), ord("\n"), c.KEY_ENTER, 10, 13):
-            self.focus = "opts"
+            if self.cur_cat() == UTILS_CATEGORY:
+                self._utils_overlay()
+            else:
+                self.focus = "opts"
         return True
 
     def _handle_opt_key(self, ch) -> bool:
@@ -2000,7 +2022,10 @@ class App:
         elif ch in (ord("u"),):
             self._reset_current()
         elif ch in (ord("\n"), c.KEY_ENTER, 10, 13, c.KEY_RIGHT, ord("l")):
-            self.edit_current()
+            if self.cur_cat() == UTILS_CATEGORY:
+                self._utils_overlay()
+            else:
+                self.edit_current()
         return True
 
     def _enter_search(self):
@@ -2793,6 +2818,53 @@ class App:
                 scroll = max(0, scroll - rows)
             else:
                 return
+
+    def _draw_utils_menu(self, top, bottom, cat_w, opt_w):
+        c = self.curses
+        x0 = cat_w + 1
+        utils = self._utils()
+        for i, u in enumerate(utils):
+            y = top + i
+            if y > bottom:
+                break
+            self.safe(y, x0, ("• " + u["name"])[: opt_w - 2],
+                      c.color_pair(5) | c.A_BOLD)
+        y = top + len(utils) + 1
+        if y <= bottom:
+            self.safe(y, x0, "Enter → open", c.color_pair(6))
+
+    def _draw_utils_detail(self, top, bottom, x, width):
+        c = self.curses
+        if width < 10:
+            return
+        y = top
+        self.safe(y, x, "Utils", c.color_pair(10) | c.A_BOLD); y += 1
+        self.safe(y, x, "one-shot maintenance actions", c.color_pair(2)); y += 2
+        self.safe(y, x, "Press → or Enter to open the Utils menu.",
+                  c.color_pair(4)); y += 2
+        utils = self._utils()
+        if not utils:
+            return
+        u = utils[0]
+        try:
+            status = u["status"]()
+        except Exception:
+            status = ""
+        self.safe(y, x, ("─ " + u["name"] + " ")
+                  + "─" * max(0, width - len(u["name"]) - 3), c.color_pair(4)); y += 1
+        if status:
+            self.safe(y, x, ("status: " + status)[:width], c.color_pair(6)); y += 1
+        for ln in u.get("explain", [])[2:]:
+            done = False
+            for seg in self._wrap(ln, width):
+                if y > bottom:
+                    done = True
+                    break
+                heading = bool(ln) and not ln.startswith(" ") and ":" not in ln
+                attr = c.color_pair(5) | c.A_BOLD if heading else c.color_pair(4)
+                self.safe(y, x, seg[:width], attr); y += 1
+            if done:
+                break
 
     def _utils(self) -> list[dict]:
         """The Utils menu registry. Each entry is a one-shot maintenance action

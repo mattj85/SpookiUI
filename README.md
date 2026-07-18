@@ -105,7 +105,8 @@ only ever see what's relevant to the machine you're on.
 Editors are typed to each option:
 
 - **booleans** toggle instantly
-- **enums / font** open a searchable picker with live preview
+- **enums / font** open a searchable picker with live preview, listing *every*
+  valid choice Ghostty documents (e.g. all 11 `macos-icon` styles)
 - **theme** opens the picker with a **live colour card** for the highlighted
   theme — its 16-colour palette and a foreground-on-background sample, rendered
   right beside the list so you see a theme before applying it
@@ -124,6 +125,13 @@ Editors are typed to each option:
 
 **Auto-apply off** stages your edits in memory instead of touching disk; press
 `s` to write + reload them all at once.
+
+On macOS you can also restyle the **app icon** from here: pick a `macos-icon`
+style (`official`, `blueprint`, `chalkboard`, `microchip`, `glass`,
+`holographic`, `paper`, `retro`, `xray`, …) and, with `custom-style`, tweak
+`macos-icon-frame` plus the `macos-icon-ghost-color` / `macos-icon-screen-color`
+(which get live swatches). See the icon gallery at
+<https://noahskelton.github.io/ghostty-icons/>.
 
 ## Scriptable CLI
 

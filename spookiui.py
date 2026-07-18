@@ -282,6 +282,31 @@ class Option:
 _ENUM_RE = re.compile(r"\*\s+`([^`]+)`")
 _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d*\.\d+$")
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
+
+
+def _enum_values_from_doc(doc: str) -> list[str]:
+    """Pull enum choices from a bulleted doc block. Ghostty sometimes packs
+    several values onto one bullet (`macos-icon`: `blueprint`, `chalkboard`, …)
+    and wraps the list onto continuation lines, so we gather backtick tokens
+    from each bullet *and* its continuation lines — but only the part before the
+    ` - `/` — ` description, so backticked terms in prose aren't mistaken for
+    values."""
+    vals: list[str] = []
+    in_item = False
+    for raw in doc.split("\n"):
+        stripped = raw.strip()
+        if stripped.startswith("*"):
+            in_item = True
+            content = stripped[1:]
+        elif in_item and stripped.startswith("`"):
+            content = stripped          # a wrapped continuation of the value list
+        else:
+            in_item = False
+            continue
+        left = re.split(r"\s[-—]\s", content, maxsplit=1)[0]
+        vals.extend(_BACKTICK_RE.findall(left))
+    return vals
 
 
 def _classify(opt: Option) -> None:
@@ -316,7 +341,7 @@ def _classify(opt: Option) -> None:
         return
 
     # enum: bulleted backtick values in the docs where the default is one of them
-    cands = _ENUM_RE.findall(opt.doc)
+    cands = _enum_values_from_doc(opt.doc)
     cands = [c for c in cands if " " not in c and len(c) <= 32]
     if cands and dflt and dflt in cands:
         opt.kind = "enum"

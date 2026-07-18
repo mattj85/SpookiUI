@@ -25,7 +25,7 @@ class Spookiui < Formula
     libexec.install "spookiui.py"
     (bin/"spookiui").write <<~SH
       #!/bin/bash
-      exec "#{Formula["python@3.12"].opt_bin}/python3.12" "#{libexec}/spookiui.py" "$@"
+      exec "#{formula_opt_bin("python@3.12")}/python3.12" "#{libexec}/spookiui.py" "$@"
     SH
   end
 

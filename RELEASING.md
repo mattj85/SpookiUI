@@ -66,8 +66,26 @@ The comparison is numeric (`1.10.0` is correctly newer than `1.9.0`), and any
    #   "a newer release is available: v1.1.0"
    ```
 
+5. **Update the Homebrew tap** so `brew install`/`brew upgrade` gets the new
+   version. The formula lives in the [`homebrew-spookiui`](https://github.com/mattj85/homebrew-spookiui)
+   tap at `Formula/spookiui.rb` (canonical copy in this repo at
+   `homebrew/spookiui.rb`). In both, bump `url` to the new tag and refresh the
+   checksum:
+
+   ```bash
+   # compute the new tarball checksum
+   curl -sL https://github.com/mattj85/SpookiUI/archive/refs/tags/v1.1.0.tar.gz \
+     | shasum -a 256
+   # edit url + sha256 in homebrew/spookiui.rb here AND Formula/spookiui.rb in
+   # the tap, commit and push both
+   ```
+
+   Validate the tap before pushing (or after): `brew style mattj85/spookiui/spookiui`
+   and, on an up-to-date machine, `brew audit --strict mattj85/spookiui/spookiui`.
+
 That's it. Users will see a `⬆ UPDATE v1.1.0` badge in the TUI header the next
-time their daily check runs, and `spookiui version` will report it on demand.
+time their daily check runs, `spookiui version` will report it on demand, and
+`brew upgrade spookiui` picks it up.
 
 ## Notes
 

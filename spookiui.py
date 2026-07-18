@@ -18,8 +18,8 @@ Every option Ghostty exposes is discovered dynamically from the binary itself
 Ghostty version you have installed — nothing is hard-coded.
 
 There is also a scriptable, non-interactive CLI: `get`, `set`, `list`, `doc`,
-`reset`, `version`, `update`, `profile`, `doctor`, `reload`, `validate`,
-`themes`, `fonts`, `path`. Run `./spookiui.py --help`.
+`reset`, `version`, `update`, `profile`, `doctor`, `fix-ssh`, `reload`,
+`validate`, `themes`, `fonts`, `path`. Run `./spookiui.py --help`.
 
 On startup SpookiUI checks GitHub for a newer release (cached for a day; set
 SPOOKIUI_NO_UPDATE_CHECK=1 to disable) and shows a badge if one is available.
@@ -1322,6 +1322,139 @@ def run_doctor(sess: "Session") -> list[tuple[str, str]]:
     return findings
 
 
+# ── Utils: SSH terminfo fix ─────────────────────────────────────────────────
+#
+# Ghostty advertises itself to programs with TERM=xterm-ghostty. When you SSH
+# into another host, that host looks "xterm-ghostty" up in *its own* terminfo
+# database — and most remote boxes have never heard of it. The remote shell
+# then misbehaves: garbled or dead keys, no colour, broken `clear`/`tput`, or
+# the classic `Error opening terminal: xterm-ghostty`. Forcing the `ssh`
+# command to use a TERM every host already ships (xterm-256color) sidesteps
+# this without touching the remote. The alias below does exactly that.
+
+SSH_ALIAS_LINE = 'alias ssh="TERM=xterm-256color ssh"'
+SSH_FIX_MARKER = "# added by SpookiUI — force a portable TERM over SSH (see fix-ssh)"
+_SSH_ALIAS_RE = re.compile(r"""^\s*alias\s+ssh\s*=\s*['"]?\s*TERM=xterm-256color\s+ssh""")
+
+SSH_FIX_EXPLANATION = [
+    "Fix SSH — terminfo over SSH",
+    "",
+    "Ghostty tells programs it is `xterm-ghostty` (via the TERM variable).",
+    "When you SSH into another machine, that machine looks xterm-ghostty up",
+    "in its own terminfo database — and most remote hosts have never heard",
+    "of it. The remote shell then misbehaves: garbled or dead keys, missing",
+    "colour, broken `clear`/`tput`, or the classic error:",
+    "    Error opening terminal: xterm-ghostty",
+    "",
+    "What this does",
+    "  Adds one line to your shell rc (~/.zshrc or ~/.bashrc):",
+    f"      {SSH_ALIAS_LINE}",
+    "  so the `ssh` command runs with TERM=xterm-256color — a terminfo entry",
+    "  essentially every host already ships. Your local Ghostty session keeps",
+    "  its full xterm-ghostty features; only the outbound SSH connection is",
+    "  downgraded to the universally-understood xterm-256color.",
+    "",
+    "Safe & idempotent",
+    "  If the alias is already present it does nothing. Nothing on the remote",
+    "  host is changed. To undo, delete the alias line from your rc file.",
+    "  (A more thorough alternative is copying Ghostty's terminfo to each host,",
+    "   but this alias is the quick fix that needs no remote access.)",
+]
+
+
+def _home() -> str:
+    return os.path.expanduser("~")
+
+
+def _tilde(path: str) -> str:
+    """Render an absolute path under $HOME as ~/… for friendlier messages."""
+    home = _home()
+    if path == home:
+        return "~"
+    if path.startswith(home + os.sep):
+        return "~" + path[len(home):]
+    return path
+
+
+def ssh_rc_scan_files() -> list[str]:
+    """Existing shell rc files that might already carry the ssh alias."""
+    names = (".zshrc", ".bashrc", ".bash_profile", ".zprofile",
+             ".profile", ".bash_aliases")
+    out = []
+    for n in names:
+        p = os.path.join(_home(), n)
+        if os.path.isfile(p):
+            out.append(p)
+    return out
+
+
+def ssh_rc_target() -> str:
+    """Which rc file to add the alias to: the current login shell's primary rc.
+    Defaults to ~/.zshrc (the macOS/Ghostty default shell) when unsure."""
+    shell = os.path.basename(os.environ.get("SHELL", ""))
+    home = _home()
+    if shell == "bash":
+        for n in (".bashrc", ".bash_profile"):
+            p = os.path.join(home, n)
+            if os.path.exists(p):
+                return p
+        return os.path.join(home, ".bashrc")
+    return os.path.join(home, ".zshrc")
+
+
+def find_ssh_alias() -> str | None:
+    """Path of the first shell rc that already defines the TERM ssh alias."""
+    for path in ssh_rc_scan_files():
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if _SSH_ALIAS_RE.match(line):
+                        return path
+        except OSError:
+            continue
+    return None
+
+
+def _verify_rc(path: str) -> tuple[bool, str]:
+    """The 'source refresh' step. We deliberately *syntax-check* the rc with the
+    shell's `-n` flag rather than fully sourcing it: a child process cannot
+    change the parent shell's environment anyway (so a real source would be a
+    no-op for the caller's terminal), and fully executing someone's rc
+    non-interactively can hang or spawn things. This confirms our edit didn't
+    break the file; the caller still tells the user to reload their shell."""
+    shell = os.environ.get("SHELL") or "/bin/sh"
+    try:
+        proc = _run([shell, "-n", path], timeout=10)
+    except Exception as e:
+        return False, str(e)
+    if proc.returncode == 0:
+        return True, "rc parses cleanly"
+    return False, (proc.stderr or proc.stdout).strip() or "shell reported an error"
+
+
+def apply_ssh_fix() -> tuple[bool, str]:
+    """Add the ssh TERM alias to the user's shell rc if it isn't already there.
+    Idempotent: a second run finds the alias and does nothing."""
+    existing = find_ssh_alias()
+    if existing:
+        return True, (f"already fixed — an ssh alias forcing TERM=xterm-256color "
+                      f"is present in {_tilde(existing)}; nothing to do")
+    target = ssh_rc_target()
+    block = "\n".join(["", SSH_FIX_MARKER, SSH_ALIAS_LINE]) + "\n"
+    try:
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(block)
+    except OSError as e:
+        return False, f"could not write {_tilde(target)}: {e}"
+    reload_hint = (f"run `source {_tilde(target)}` or open a new terminal "
+                   "for it to take effect now")
+    ok, note = _verify_rc(target)
+    if ok:
+        return True, f"added the ssh alias to {_tilde(target)} — {reload_hint}"
+    return True, (f"added the ssh alias to {_tilde(target)} "
+                  f"(warning: {note}) — {reload_hint}")
+
+
 _HEX_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
 
 
@@ -1771,7 +1904,7 @@ class App:
         if self.search_mode:
             hints = " type to filter · ↑↓ move · Enter edit · Esc exit search "
         elif self.focus == "cats":
-            hints = " ↑↓ category · →/Enter options · / search · a auto-apply · d changes · ? help · q quit "
+            hints = " ↑↓ category · →/Enter options · / search · a auto-apply · v utils · d changes · ? help · q quit "
         else:
             hints = " ↑↓ option · Enter/→ edit · ← back · u reset · s save · r reload · / search · ? help · q quit "
         bar = hints + " " * max(0, w - len(hints))
@@ -1826,6 +1959,9 @@ class App:
             return True
         if ch in (ord("c"), ord("C")):
             self._doctor_overlay()
+            return True
+        if ch in (ord("v"), ord("V")):
+            self._utils_overlay()
             return True
         if ch in (ord("["),):
             self.doc_scroll = max(0, self.doc_scroll - 1); return True
@@ -2658,6 +2794,93 @@ class App:
             else:
                 return
 
+    def _utils(self) -> list[dict]:
+        """The Utils menu registry. Each entry is a one-shot maintenance action
+        with an explanation pane; add future utilities here."""
+        return [
+            {
+                "name": "Fix SSH",
+                "explain": SSH_FIX_EXPLANATION,
+                "status": lambda: (f"applied · alias in {_tilde(find_ssh_alias())}"
+                                   if find_ssh_alias() else "not applied yet"),
+                "run": apply_ssh_fix,
+            },
+        ]
+
+    def _utils_overlay(self):
+        c = self.curses
+        utils = self._utils()
+        sel = 0
+        while True:
+            self.scr.erase()
+            h, w = self.dims()
+            self.safe(0, 0, " utils · one-shot fixes ".ljust(w),
+                      c.color_pair(1) | c.A_BOLD)
+            list_w = 20
+            top = 2
+            for i, u in enumerate(utils):
+                y = top + i
+                if y >= h - 2:
+                    break
+                attr = c.color_pair(3) | c.A_BOLD if i == sel else c.A_NORMAL
+                self.safe(y, 2, ("→ " if i == sel else "  ") + u["name"], attr)
+            for y in range(top, h - 2):
+                self.safe(y, list_w, "│", c.color_pair(4))
+
+            u = utils[sel]
+            dx, dw = list_w + 2, w - list_w - 3
+            y = top
+            try:
+                status = u["status"]()
+            except Exception:
+                status = ""
+            if status:
+                self.safe(y, dx, ("status: " + status)[:dw], c.color_pair(6)); y += 1
+                y += 1
+            for ln in u.get("explain", []):
+                for seg in self._wrap(ln, dw):
+                    if y >= h - 2:
+                        break
+                    heading = bool(ln) and not ln.startswith(" ") and ":" not in ln
+                    attr = c.color_pair(5) | c.A_BOLD if heading else c.color_pair(4)
+                    self.safe(y, dx, seg[:dw], attr); y += 1
+                if y >= h - 2:
+                    break
+            self.safe(h - 1, 0, " ↑↓ move · Enter run · Esc close ".ljust(w),
+                      c.color_pair(1))
+            self.scr.refresh()
+            ch = self.scr.getch()
+            if ch in (27,):
+                return
+            if ch in (c.KEY_UP, ord("k")):
+                sel = max(0, sel - 1)
+            elif ch in (c.KEY_DOWN, ord("j")):
+                sel = min(len(utils) - 1, sel + 1)
+            elif ch in (ord("\n"), c.KEY_ENTER, 10, 13):
+                if self._confirm(f"Run '{u['name']}' now?"):
+                    self._msg(f"running {u['name']}…", "info"); self.draw()
+                    try:
+                        ok, m = u["run"]()
+                    except Exception as e:
+                        ok, m = False, str(e)
+                    self._utils_result(u["name"], ok, m)
+
+    def _utils_result(self, name, ok, msg):
+        c = self.curses
+        self.scr.erase()
+        h, w = self.dims()
+        self.safe(0, 0, f" {name} ".ljust(w),
+                  c.color_pair(6 if ok else 7) | c.A_BOLD)
+        y = 2
+        for seg in self._wrap(("✓ " if ok else "✗ ") + msg, w - 4):
+            if y >= h - 2:
+                break
+            self.safe(y, 2, seg[:w - 3], c.color_pair(6 if ok else 7) | c.A_BOLD)
+            y += 1
+        self.safe(h - 1, 0, " any key to return ".ljust(w), c.color_pair(1))
+        self.scr.refresh()
+        self.scr.getch()
+
     def _help(self):
         c = self.curses
         info = self._update_info
@@ -2696,6 +2919,7 @@ class App:
             "  U   update SpookiUI in place to the latest release",
             "  p   profiles — save / load / delete named configs, light↔dark",
             "  c   config check — health-check for issues (doctor)",
+            "  v   utils — one-shot fixes (e.g. Fix SSH for garbled remote shells)",
             "  d   show what you've changed",
             "  q   quit",
             "",
@@ -2925,6 +3149,24 @@ def cli_doctor(sess: Session, args) -> int:
     return 1 if n_err else 0
 
 
+def cli_fix_ssh(sess: Session, args) -> int:
+    if args.explain:
+        for line in SSH_FIX_EXPLANATION:
+            print(line)
+        return 0
+    if args.check:
+        existing = find_ssh_alias()
+        if existing:
+            print(f"ssh alias present in {_tilde(existing)}")
+            return 0
+        print("ssh alias not found in any shell rc "
+              f"(would be added to {_tilde(ssh_rc_target())})", file=sys.stderr)
+        return 1
+    ok, m = apply_ssh_fix()
+    print(m, file=sys.stdout if ok else sys.stderr)
+    return 0 if ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="spookiui",
@@ -2988,6 +3230,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("doctor", help="health-check the config for issues")
     sp.set_defaults(func=cli_doctor)
+
+    sp = sub.add_parser(
+        "fix-ssh",
+        help="fix garbled SSH sessions (force TERM=xterm-256color via a shell alias)")
+    sp.add_argument("--check", action="store_true",
+                    help="report whether the alias is present; change nothing")
+    sp.add_argument("--explain", action="store_true",
+                    help="explain what the fix does and why, then exit")
+    sp.set_defaults(func=cli_fix_ssh)
     return p
 
 

@@ -106,7 +106,10 @@ Editors are typed to each option:
 
 - **booleans** toggle instantly
 - **enums / theme / font** open a searchable picker with live preview
-- **numbers** step with `↑`/`↓` or `+`/`-`, or type a value
+- **bounded numbers** (opacity, `minimum-contrast`, …) open a **visual slider** —
+  `←`/`→` to adjust, `PgUp`/`PgDn` for larger jumps, `Home`/`End` for the ends,
+  all previewed live
+- **other numbers** step with `↑`/`↓` or `+`/`-`, or type a value
 - **colors / text** take a typed value (`#rrggbb` or a named color); colors show
   a swatch
 - **lists** (`keybind`, `palette`, `env`, font fallbacks, …) get an add/edit/delete

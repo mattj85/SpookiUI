@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 # --------------------------------------------------------------------------- #
@@ -235,6 +235,30 @@ COLOR_HINTS = (
     "split-divider-color", "unfocused-split-fill", "window-padding-color",
     "window-titlebar-background", "window-titlebar-foreground",
 )
+
+# Numeric options that have a well-defined range get a visual slider in the TUI
+# instead of a plain type-a-number prompt: (min, max, step). Opacity-style
+# options (docs describe "fully opaque"/"fully transparent") are detected
+# automatically in slider_range(); this map is for the rest.
+SLIDER_RANGES = {
+    "minimum-contrast": (1.0, 21.0, 0.5),      # WCAG contrast ratio
+    "bell-audio-volume": (0.0, 1.0, 0.05),     # 0.0 silence .. 1.0 loudest
+    "background-image-opacity": (0.0, 1.0, 0.05),
+}
+
+
+def slider_range(opt: Option):
+    """Return (min, max, step) if this option should use a slider, else None.
+
+    Kept tolerant of Ghostty version drift: any future 0–1 opacity option is
+    picked up from its docs without needing to be listed explicitly."""
+    if opt.name in SLIDER_RANGES:
+        return SLIDER_RANGES[opt.name]
+    if opt.kind == "float":
+        d = opt.doc.lower()
+        if "fully opaque" in d and "fully transparent" in d:
+            return (0.0, 1.0, 0.05)
+    return None
 
 
 @dataclass
@@ -953,6 +977,13 @@ def rgb_to_256(r: int, g: int, b: int) -> int:
 
 def run_tui(sess: "Session") -> None:
     import curses
+    import locale
+    # Make curses render UTF-8 (slider bar, badges, box chars) regardless of how
+    # the process was started; addstr encodes via the locale's preferred codec.
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
     try:
         curses.set_escdelay(25)  # make single-ESC snappy, not a 1s wait
     except Exception:
@@ -1425,7 +1456,11 @@ class App:
         elif opt.kind == "font":
             self._edit_font(opt)
         elif opt.kind in ("int", "float"):
-            self._edit_number(opt)
+            rng = slider_range(opt)
+            if rng:
+                self._edit_slider(opt, *rng)
+            else:
+                self._edit_number(opt)
         elif opt.kind in ("list", "keybind", "palette"):
             self._edit_list(opt)
         else:  # color, text
@@ -1605,6 +1640,93 @@ class App:
             s = f"{val:.2f}"
             return s.rstrip("0").rstrip(".") if "." in s else s
         return str(int(round(val)))
+
+    def _edit_slider(self, opt: Option, lo: float, hi: float, step: float):
+        """Visual slider for a bounded numeric option. Left/right (or -/+, h/l,
+        j/k) nudge by one step, PgUp/PgDn by ten, Home/End jump to the ends.
+        Every change previews live; Esc rolls back to where we started."""
+        c = self.curses
+        snap = self._snap()
+        is_float = opt.kind == "float" or step < 1
+        nsteps = max(1, int(round((hi - lo) / step)))
+        # Track position as an integer step index to avoid float drift.
+        cur = self.sess.effective(opt.name)
+        try:
+            start = float(cur) if cur not in ("", None) else lo
+        except ValueError:
+            start = lo
+        idx = max(0, min(nsteps, int(round((start - lo) / step))))
+
+        def value(i):
+            return hi if i >= nsteps else lo + i * step
+
+        pending = True   # preview on entry so the live value matches the knob
+        while True:
+            self._draw_slider(opt, lo, hi, value(idx), is_float, idx / nsteps)
+            if pending:
+                self._commit_scalar(opt, self._fmt_num(value(idx), is_float),
+                                    preview=True)
+                pending = False
+            ch = self.scr.getch()
+            if ch in (27,):
+                self._restore(snap); self._msg("cancelled", "info"); return
+            if ch in (ord("\n"), c.KEY_ENTER, 10, 13):
+                v = self._fmt_num(value(idx), is_float)
+                ok, errs = self._commit_scalar(opt, v)
+                if not ok:
+                    self._restore(snap)
+                self._report(opt, v, ok, errs)
+                return
+            new = idx
+            if ch in (c.KEY_LEFT, c.KEY_DOWN, ord("-"), ord("_"), ord("h"), ord("j")):
+                new = idx - 1
+            elif ch in (c.KEY_RIGHT, c.KEY_UP, ord("+"), ord("="), ord("l"), ord("k")):
+                new = idx + 1
+            elif ch in (c.KEY_NPAGE,):
+                new = idx - 10
+            elif ch in (c.KEY_PPAGE,):
+                new = idx + 10
+            elif ch in (c.KEY_HOME,):
+                new = 0
+            elif ch in (c.KEY_END,):
+                new = nsteps
+            new = max(0, min(nsteps, new))
+            if new != idx:
+                idx = new
+                pending = True
+
+    def _draw_slider(self, opt: Option, lo, hi, val, is_float, frac):
+        c = self.curses
+        self.scr.erase()
+        h, w = self.dims()
+        self.safe(0, 0, f" set · {opt.name} ".ljust(w), c.color_pair(1) | c.A_BOLD)
+        row = 2
+        for dl in opt.doc.split("\n")[:3]:
+            self.safe(row, 2, dl[:w - 3], c.color_pair(4)); row += 1
+
+        lo_s, hi_s, val_s = (self._fmt_num(lo, is_float),
+                             self._fmt_num(hi, is_float),
+                             self._fmt_num(val, is_float))
+        bar_w = max(10, min(48, w - (len(lo_s) + len(hi_s) + 8)))
+        knob = max(0, min(bar_w - 1, int(round(frac * (bar_w - 1)))))
+        y = max(row + 2, h // 2 - 1)
+        x = max(2, (w - (bar_w + len(lo_s) + len(hi_s) + 4)) // 2)
+
+        self.safe(y, x, lo_s + " ", c.color_pair(4))
+        bx = x + len(lo_s) + 1
+        self.safe(y, bx, "━" * knob, c.color_pair(5) | c.A_BOLD)
+        self.safe(y, bx + knob, "●", c.color_pair(6) | c.A_BOLD)
+        self.safe(y, bx + knob + 1, "─" * (bar_w - knob - 1), c.color_pair(4))
+        self.safe(y, bx + bar_w + 1, " " + hi_s, c.color_pair(4))
+
+        vtxt = f"  {val_s}  "
+        self.safe(y + 2, max(2, (w - len(vtxt)) // 2), vtxt, c.color_pair(10) | c.A_BOLD)
+        default_line = f"default: {opt.default or '(empty)'}"
+        self.safe(y + 3, max(2, (w - len(default_line)) // 2), default_line, c.color_pair(4))
+        self.safe(h - 1, 0,
+                  " ←/→ adjust · PgUp/PgDn ×10 · Home/End min/max · Enter apply · Esc cancel ".ljust(w),
+                  c.color_pair(1))
+        self.scr.refresh()
 
     def _edit_text(self, opt: Option):
         snap = self._snap()
@@ -1836,6 +1958,7 @@ class App:
             "   • booleans toggle instantly",
             "   • enums/theme/font open a picker with live preview",
             "   • numbers: ↑↓ or +/- to step, or type a value",
+            "   • bounded values (opacity, contrast): a slider — ←/→ to adjust",
             "   • colors/text: type a value (#hex or name)",
             "   • lists (keybind/palette/env): a add, e edit, d delete",
             "  u             reset the selected option to its default",

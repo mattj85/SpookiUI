@@ -39,6 +39,18 @@ The installer verifies Python 3.8+, checks for the `ghostty` binary (warning
 with install hints if it's missing), and symlinks `spookiui.py` into your bin
 directory. After it runs, `spookiui` and `spookiui --help` work from anywhere.
 
+To reverse it, run the uninstaller (pass the same `PREFIX` you installed with):
+
+```bash
+./uninstall.sh                   # remove the `spookiui` command
+PREFIX=/usr/local ./uninstall.sh # if you installed there
+./uninstall.sh --purge           # also delete SpookiUI's cache + saved profiles
+```
+
+It only removes the symlink it recognises as its own (never a file it didn't
+create, and never a Homebrew install — use `brew uninstall` for that), and
+leaves your Ghostty config and the repo untouched.
+
 ### Homebrew (macOS & Linux)
 
 A Homebrew formula lives in [`homebrew/spookiui.rb`](homebrew/spookiui.rb). Once

@@ -117,3 +117,4 @@ case ":$PATH:" in
         info "Until then you can run it directly: ${BOLD}$TARGET${RESET}"
         ;;
 esac
+info "To uninstall later: ${BOLD}./uninstall.sh${RESET} (same PREFIX)."

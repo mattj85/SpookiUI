@@ -148,6 +148,7 @@ be applied without a restart at all; the UI flags these as *needs restart* /
 | `U` | update SpookiUI in place to the latest release |
 | `p` | **profiles** — save / load / delete named configs · `t` toggles light↔dark |
 | `c` | **config check** (doctor) — health-check for issues |
+| `v` | **utils** — one-shot fixes (e.g. **Fix SSH**) |
 | `d` | show everything you've changed |
 | `?` | help · `q` quit |
 
@@ -198,6 +199,48 @@ lines), settings that just repeat a default, and keybind triggers bound twice or
 shadowing a Ghostty default. Findings are grouped by severity; it exits non-zero
 when there are errors, so it drops cleanly into a pre-commit hook for dotfiles.
 
+## Utils — one-shot fixes
+
+The **⚙ Utils** category (last entry in the left pane, or press `v` anywhere)
+collects small, one-shot maintenance actions that aren't Ghostty config options.
+Highlight an action to read what it does; press `Enter`/`→` to run it.
+
+### Fix SSH
+
+Ghostty tells programs it is **`xterm-ghostty`** (via the `TERM` variable). When
+you SSH into another machine, that host looks `xterm-ghostty` up in **its own**
+terminfo database — and most remote boxes have never heard of it. The remote
+shell then misbehaves: garbled or dead keys, missing colour, broken
+`clear`/`tput`, or the classic `Error opening terminal: xterm-ghostty`.
+
+**Fix SSH** adds one line to your shell rc (`~/.zshrc` or `~/.bashrc`, whichever
+matches your login shell):
+
+```sh
+alias ssh="TERM=xterm-256color ssh"
+```
+
+so the `ssh` command runs with **`xterm-256color`** — a terminfo entry
+essentially every host already ships. Your local Ghostty session keeps its full
+`xterm-ghostty` features; only the outbound SSH connection is downgraded to the
+universally-understood value. Nothing on the remote host is changed.
+
+It's **safe and idempotent**: it first scans your shell rc files (`.zshrc`,
+`.bashrc`, `.bash_profile`, …) and does nothing if the alias is already there;
+otherwise it appends the line and syntax-checks the file. Because a running shell
+can't be modified from outside, it then tells you to `source` the file or open a
+new terminal for the alias to take effect. To undo, delete the alias line. (A
+more thorough alternative is copying Ghostty's terminfo to each host, but this
+alias is the quick fix that needs no remote access.)
+
+Run it from the CLI too:
+
+```bash
+./spookiui.py fix-ssh            # add the alias if it's missing
+./spookiui.py fix-ssh --check    # report whether it's present; change nothing
+./spookiui.py fix-ssh --explain  # print the full what/why, then exit
+```
+
 ## Scriptable CLI
 
 Everything the TUI does is also available non-interactively:
@@ -217,6 +260,8 @@ Everything the TUI does is also available non-interactively:
 ./spookiui.py profile list         # list saved profiles  (also: show / delete / toggle)
 ./spookiui.py profile toggle       # flip between the 'light' and 'dark' profiles
 ./spookiui.py doctor               # health-check the config (duplicates, unknown keys, keybind clashes…)
+./spookiui.py fix-ssh              # fix garbled SSH sessions (adds a TERM=xterm-256color ssh alias)
+./spookiui.py fix-ssh --check      # report whether the SSH alias is present; change nothing
 ./spookiui.py reload               # trigger a live reload
 ./spookiui.py validate             # validate the current config
 ./spookiui.py themes               # list installed themes

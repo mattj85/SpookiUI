@@ -121,6 +121,7 @@ be applied without a restart at all; the UI flags these as *needs restart* /
 | `s` | save + reload now · `r` re-trigger reload |
 | `R` | revert everything to session start |
 | `X` | wipe config & restore **all** Ghostty defaults (backup kept) |
+| `U` | update SpookiUI in place to the latest release |
 | `d` | show everything you've changed |
 | `?` | help · `q` quit |
 
@@ -168,6 +169,7 @@ Everything the TUI does is also available non-interactively:
 ./spookiui.py set   <key> <v> --no-reload   # write without reloading
 ./spookiui.py reset --yes          # clear config & restore all Ghostty defaults (backup kept)
 ./spookiui.py version              # print version & check GitHub for a newer release
+./spookiui.py update               # update in place to the latest release (git pull or download)
 ./spookiui.py reload               # trigger a live reload
 ./spookiui.py validate             # validate the current config
 ./spookiui.py themes               # list installed themes
@@ -195,10 +197,10 @@ Examples:
 - The config path is auto-detected (`$XDG_CONFIG_HOME/ghostty/config`, then
   `~/.config/ghostty/config`, then the macOS app-support path).
 
-## Update notifications
+## Updates
 
 On startup SpookiUI quietly checks GitHub for a newer release. If one exists, the
-TUI shows a `⬆ UPDATE vX.Y.Z` badge in the header (and the release URL on the
+TUI shows a `⬆ UPDATE vX.Y.Z` badge in the header (and *press `U` to update* on the
 status line); the help screen (`?`) always shows your current version. Run
 `spookiui version` any time to check on demand.
 
@@ -207,5 +209,21 @@ times out quickly, and stays silent if you're offline or GitHub is unreachable.
 The result is cached for a day (under `$XDG_CACHE_HOME/spookiui/`) so it never
 hammers the API. To turn it off entirely, set `SPOOKIUI_NO_UPDATE_CHECK=1`.
 
-Maintainers: notifications only fire once a matching **GitHub Release** is
-published — see [`RELEASING.md`](RELEASING.md) for the bump-and-release flow.
+### Updating in place — no `git pull` needed
+
+Press `U` in the TUI, or run `spookiui update`. No update server is involved —
+GitHub is the source, and SpookiUI is a single file, so updating just swaps that
+file:
+
+- **Git checkout** (the default `install.sh` layout) → it runs `git pull` for you.
+- **Standalone copy** → it downloads the latest release's `spookiui.py`, *verifies
+  it compiles*, then atomically replaces the file (keeping a `.prev` backup). A
+  truncated or bad download can never leave you with a broken tool.
+- **No write permission** (e.g. installed system-wide as root) → it tells you the
+  exact command to run instead of failing silently.
+
+Restart SpookiUI afterwards to run the new version.
+
+Maintainers: notifications and updates only pick up a version once a matching
+**GitHub Release** is published — see [`RELEASING.md`](RELEASING.md) for the
+bump-and-release flow.

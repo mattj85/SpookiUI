@@ -18,8 +18,8 @@ Every option Ghostty exposes is discovered dynamically from the binary itself
 Ghostty version you have installed — nothing is hard-coded.
 
 There is also a scriptable, non-interactive CLI: `get`, `set`, `list`, `doc`,
-`reset`, `version`, `reload`, `validate`, `themes`, `fonts`, `path`. Run
-`./spookiui.py --help`.
+`reset`, `version`, `update`, `reload`, `validate`, `themes`, `fonts`, `path`.
+Run `./spookiui.py --help`.
 
 On startup SpookiUI checks GitHub for a newer release (cached for a day; set
 SPOOKIUI_NO_UPDATE_CHECK=1 to disable) and shows a badge if one is available.
@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 # --------------------------------------------------------------------------- #
@@ -192,6 +192,118 @@ def check_for_update(force: bool = False, now: float | None = None) -> dict | No
         "current": __version__,
         "outdated": is_newer(latest),
     }
+
+
+# --------------------------------------------------------------------------- #
+#  Self-update: replace this single file with the latest release
+# --------------------------------------------------------------------------- #
+#
+# No update server needed — GitHub is the source. For a git checkout the safe
+# update is `git pull`; for a standalone copy we download the release's
+# spookiui.py, verify it compiles, then atomically swap it in (keeping a .prev
+# backup). Everything is guarded so a failure never leaves a broken tool behind.
+
+def self_path() -> str:
+    return os.path.realpath(os.path.abspath(__file__))
+
+
+def _git_checkout_root(path: str) -> str | None:
+    """If `path` lives inside a git working tree, return that tree's root."""
+    d = os.path.dirname(path)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def _download_release_source(tag: str, timeout: float = 20.0) -> str | None:
+    url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/spookiui.py"
+    req = urllib.request.Request(
+        url, headers={"User-Agent": f"SpookiUI/{__version__}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8")
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def _verify_source(text: str) -> tuple[bool, str]:
+    """Make sure the download really is a compilable SpookiUI before we trust it."""
+    if "__version__" not in text or "def main(" not in text:
+        return False, "downloaded file doesn't look like SpookiUI"
+    import tempfile
+    import py_compile
+    fd, tmp = tempfile.mkstemp(suffix=".py")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        try:
+            py_compile.compile(tmp, doraise=True)
+        except py_compile.PyCompileError:
+            return False, "downloaded file failed to compile — update aborted"
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    return True, ""
+
+
+def _replace_self(path: str, text: str) -> tuple[bool, str]:
+    """Atomically replace `path`, keeping a .prev backup. Returns (ok, info)."""
+    d = os.path.dirname(path) or "."
+    if not os.access(path, os.W_OK) or not os.access(d, os.W_OK):
+        return False, f"no write permission for {path} — re-run with sudo or reinstall"
+    import tempfile
+    try:
+        shutil.copy2(path, path + ".prev")
+    except OSError:
+        pass
+    try:
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.chmod(tmp, os.stat(path).st_mode)   # keep the executable bit
+        os.replace(tmp, path)                   # atomic on POSIX
+    except OSError as e:
+        return False, f"failed to write update: {e}"
+    return True, path + ".prev"
+
+
+def self_update() -> tuple[bool, str]:
+    """Update this file in place to the latest release. Returns (ok, message)."""
+    info = check_for_update(force=True)
+    if info is None:
+        return False, "could not reach GitHub to check for updates"
+    if not info["outdated"]:
+        return True, f"already up to date (v{__version__})"
+    tag = info["latest"]
+    path = self_path()
+
+    repo = _git_checkout_root(path)
+    if repo:
+        proc = _run(["git", "-C", repo, "pull", "--ff-only"], timeout=60)
+        if proc.returncode == 0:
+            return True, f"updated to {tag} via git pull — restart SpookiUI to run it"
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        hint = detail[-1] if detail else "git pull failed"
+        return False, (f"this is a git checkout; run `git pull` yourself in {repo}\n"
+                       f"  ({hint})")
+
+    text = _download_release_source(tag)
+    if not text:
+        return False, f"failed to download {tag} from GitHub"
+    ok, msg = _verify_source(text)
+    if not ok:
+        return False, msg
+    ok, res = _replace_self(path, text)
+    if not ok:
+        return False, res
+    return True, (f"updated to {tag} — restart SpookiUI to run it "
+                  f"(previous version saved as {os.path.basename(res)})")
 
 
 # --------------------------------------------------------------------------- #
@@ -1415,7 +1527,7 @@ class App:
         if info and info.get("outdated") and not self._update_announced:
             self._update_announced = True
             if not self.status:
-                self._msg(f"SpookiUI {info['latest']} is available — {info['url']}", "warn")
+                self._msg(f"SpookiUI {info['latest']} is available — press U to update", "warn")
         self.scr.erase()
         h, w = self.dims()
         self._draw_header(w)
@@ -1641,6 +1753,9 @@ class App:
                 ok, m = self.sess.restore_defaults()
                 self._msg(m, "ok" if ok else "error")
             return True
+        if ch in (ord("U"),):
+            self._do_self_update()
+            return True
         if ch in (ord("["),):
             self.doc_scroll = max(0, self.doc_scroll - 1); return True
         if ch in (ord("]"),):
@@ -1675,7 +1790,7 @@ class App:
             self.opt_idx = max(0, self.opt_idx - 10); self.doc_scroll = 0
         elif ch in (c.KEY_LEFT, ord("h")):
             self.focus = "cats"
-        elif ch in (ord("u"), ord("U")):
+        elif ch in (ord("u"),):
             self._reset_current()
         elif ch in (ord("\n"), c.KEY_ENTER, 10, 13, c.KEY_RIGHT, ord("l")):
             self.edit_current()
@@ -1801,6 +1916,17 @@ class App:
             reload_ghostty()
         self.sess.dirty = True if not self.sess.auto_apply else False
         self._msg(f"{opt.name} reset to default ({opt.default or 'empty'})", "ok")
+
+    def _do_self_update(self):
+        info = self._update_info
+        if not (info and info.get("outdated")):
+            self._msg(f"SpookiUI v{__version__} is already up to date", "info")
+            return
+        if not self._confirm(f"Update SpookiUI to {info['latest']}? (a backup is kept)"):
+            return
+        self._msg(f"updating to {info['latest']}…", "info"); self.draw()
+        ok, m = self_update()
+        self._msg(m, "ok" if ok else "error")
 
     def _edit_bool(self, opt: Option):
         cur = self.sess.effective(opt.name)
@@ -2411,6 +2537,7 @@ class App:
             "  s   save + reload now      r   re-trigger reload",
             "  R   revert everything to session start",
             "  X   wipe config & restore all Ghostty defaults (backup kept)",
+            "  U   update SpookiUI in place to the latest release",
             "  d   show what you've changed",
             "  q   quit",
             "",
@@ -2544,9 +2671,17 @@ def cli_version(sess: Session, args) -> int:
     if info["outdated"]:
         print(f"a newer release is available: {info['latest']}")
         print(f"  {info['url']}")
+        print("  run `spookiui update` to upgrade in place")
     else:
         print("you're on the latest release")
     return 0
+
+
+def cli_update(sess: Session, args) -> int:
+    print(f"SpookiUI v{__version__} — checking for updates…")
+    ok, msg = self_update()
+    print(msg, file=sys.stdout if ok else sys.stderr)
+    return 0 if ok else 1
 
 
 def cli_reset(sess: Session, args) -> int:
@@ -2625,6 +2760,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("version", help="print the version and check GitHub for updates")
     sp.add_argument("--no-check", action="store_true", help="don't contact GitHub")
     sp.set_defaults(func=cli_version)
+
+    sp = sub.add_parser("update", help="update SpookiUI in place to the latest release")
+    sp.set_defaults(func=cli_update)
 
     sp = sub.add_parser("reset", help="restore Ghostty defaults (clears your config file)")
     sp.add_argument("--yes", action="store_true", help="confirm the reset (required)")

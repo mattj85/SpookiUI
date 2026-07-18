@@ -635,7 +635,17 @@ class Session:
         return list(opt.defaults) if opt else []
 
     def is_overridden(self, name: str) -> bool:
-        return bool(self.cfg.indices_of(name))
+        # An option counts as changed only if it's present in the config *and*
+        # its effective value differs from Ghostty's default. Re-setting a key
+        # to its default value (e.g. toggling a bool back) must clear the mark.
+        if not self.cfg.indices_of(name):
+            return False
+        opt = self.schema.get(name)
+        if opt is None:
+            return True  # unknown key the user added by hand — treat as changed
+        if opt.is_list:
+            return self.effective_list(name) != list(opt.defaults)
+        return self.effective(name) != opt.default
 
     def stage_scalar(self, name: str, value: str) -> None:
         self.cfg.set_scalar(name, value)
@@ -738,7 +748,12 @@ def run_tui(sess: "Session") -> None:
         curses.set_escdelay(25)  # make single-ESC snappy, not a 1s wait
     except Exception:
         pass
-    curses.wrapper(lambda scr: App(scr, sess).run())
+    try:
+        curses.wrapper(lambda scr: App(scr, sess).run())
+    except KeyboardInterrupt:
+        # Ctrl+C from inside a modal getch loop — wrapper has already restored
+        # the terminal in its finally, so just exit quietly.
+        pass
 
 
 class App:
@@ -849,7 +864,10 @@ class App:
         c = self.curses
         while True:
             self.draw()
-            ch = self.scr.getch()
+            try:
+                ch = self.scr.getch()
+            except KeyboardInterrupt:
+                ch = 3  # Ctrl+C arrived as a signal — treat as a graceful quit
             if ch == c.KEY_RESIZE:
                 continue
             if not self.handle_key(ch):
@@ -1036,7 +1054,7 @@ class App:
         if self.search_mode:
             return self._handle_search_key(ch)
 
-        if ch in (ord("q"), ord("Q")):
+        if ch in (ord("q"), ord("Q"), 3, 24):  # q, Ctrl+C, Ctrl+X
             return self._quit()
         if ch == ord("?"):
             self._help()

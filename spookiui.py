@@ -42,9 +42,6 @@ from dataclasses import dataclass, field
 __version__ = "1.3.0"
 GITHUB_REPO = "mattj85/SpookiUI"
 
-# --------------------------------------------------------------------------- #
-#  Ghostty binary discovery
-# --------------------------------------------------------------------------- #
 
 def find_ghostty() -> str | None:
     """Return a path to the `ghostty` executable, or None if not found."""
@@ -65,12 +62,8 @@ def find_ghostty() -> str | None:
 GHOSTTY = find_ghostty()
 IS_MACOS = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
-# Whether we can trigger a live reload on this platform (macOS menu click /
-# Linux SIGUSR2). Other platforms write+validate but can't auto-reload.
 CAN_RELOAD = IS_MACOS or IS_LINUX
 INSIDE_GHOSTTY = os.environ.get("TERM_PROGRAM") == "ghostty"
-# The platform we're running on, for hiding OS-exclusive options. On anything
-# other than macOS/Linux we don't hide anything (we can't say what's relevant).
 CURRENT_PLATFORM = "macos" if IS_MACOS else ("linux" if IS_LINUX else None)
 
 
@@ -80,17 +73,7 @@ def _run(args: list[str], timeout: float = 20.0) -> subprocess.CompletedProcess:
     )
 
 
-# --------------------------------------------------------------------------- #
-#  Update check: is a newer release available on GitHub?
-# --------------------------------------------------------------------------- #
-#
-# We compare our embedded __version__ against the repo's latest GitHub Release.
-# The check is best-effort and must never get in the way: any failure (offline,
-# rate-limited, no releases yet) is swallowed silently. Results are cached for a
-# day so we don't hammer GitHub's unauthenticated 60-req/hour limit, and the
-# whole thing can be turned off with SPOOKIUI_NO_UPDATE_CHECK=1.
-
-UPDATE_CHECK_TTL = 24 * 60 * 60          # seconds between network checks
+UPDATE_CHECK_TTL = 24 * 60 * 60
 _RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 _RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
 
@@ -176,8 +159,8 @@ def check_for_update(force: bool = False, now: float | None = None) -> dict | No
         got = _fetch_latest_release()
         if got is None:
             if not cache:
-                return None                       # nothing to report
-            latest = cache.get("latest")          # fall back to stale cache
+                return None
+            latest = cache.get("latest")
         else:
             latest = got["latest"]
             cache = {"checked_at": now, **got}
@@ -193,15 +176,6 @@ def check_for_update(force: bool = False, now: float | None = None) -> dict | No
         "outdated": is_newer(latest),
     }
 
-
-# --------------------------------------------------------------------------- #
-#  Self-update: replace this single file with the latest release
-# --------------------------------------------------------------------------- #
-#
-# No update server needed — GitHub is the source. For a git checkout the safe
-# update is `git pull`; for a standalone copy we download the release's
-# spookiui.py, verify it compiles, then atomically swap it in (keeping a .prev
-# backup). Everything is guarded so a failure never leaves a broken tool behind.
 
 def self_path() -> str:
     return os.path.realpath(os.path.abspath(__file__))
@@ -266,8 +240,8 @@ def _replace_self(path: str, text: str) -> tuple[bool, str]:
         fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
-        os.chmod(tmp, os.stat(path).st_mode)   # keep the executable bit
-        os.replace(tmp, path)                   # atomic on POSIX
+        os.chmod(tmp, os.stat(path).st_mode)
+        os.replace(tmp, path)
     except OSError as e:
         return False, f"failed to write update: {e}"
     return True, path + ".prev"
@@ -306,10 +280,6 @@ def self_update() -> tuple[bool, str]:
                   f"(previous version saved as {os.path.basename(res)})")
 
 
-# --------------------------------------------------------------------------- #
-#  Config-file location
-# --------------------------------------------------------------------------- #
-
 def config_path() -> str:
     """Best-effort path to the active Ghostty config file (XDG first)."""
     xdg = os.environ.get("XDG_CONFIG_HOME")
@@ -323,16 +293,9 @@ def config_path() -> str:
     for c in candidates:
         if os.path.exists(c):
             return c
-    # Default target if nothing exists yet.
     return candidates[0]
 
 
-# --------------------------------------------------------------------------- #
-#  Schema: every option Ghostty knows about
-# --------------------------------------------------------------------------- #
-
-# Keys that may appear more than once (a list of values) even when they only
-# show up once in the default dump because their default is empty.
 FORCE_LIST = {
     "font-family", "font-family-bold", "font-family-italic",
     "font-family-bold-italic", "font-feature", "font-variation",
@@ -348,13 +311,9 @@ COLOR_HINTS = (
     "window-titlebar-background", "window-titlebar-foreground",
 )
 
-# Numeric options that have a well-defined range get a visual slider in the TUI
-# instead of a plain type-a-number prompt: (min, max, step). Opacity-style
-# options (docs describe "fully opaque"/"fully transparent") are detected
-# automatically in slider_range(); this map is for the rest.
 SLIDER_RANGES = {
-    "minimum-contrast": (1.0, 21.0, 0.5),      # WCAG contrast ratio
-    "bell-audio-volume": (0.0, 1.0, 0.05),     # 0.0 silence .. 1.0 loudest
+    "minimum-contrast": (1.0, 21.0, 0.5),
+    "bell-audio-volume": (0.0, 1.0, 0.05),
     "background-image-opacity": (0.0, 1.0, 0.05),
 }
 
@@ -377,14 +336,14 @@ def slider_range(opt: Option):
 class Option:
     name: str
     default: str = ""
-    defaults: list[str] = field(default_factory=list)  # for list keys
+    defaults: list[str] = field(default_factory=list)
     doc: str = ""
-    values: list[str] = field(default_factory=list)    # enum choices
-    kind: str = "text"          # bool|enum|int|float|color|text|list|theme|font|palette|keybind
+    values: list[str] = field(default_factory=list)
+    kind: str = "text"
     is_list: bool = False
-    reload_note: str = ""       # non-empty when the option is not fully live
+    reload_note: str = ""
     category: str = "Advanced"
-    platform: str | None = None  # "macos"/"linux" if OS-exclusive, else None
+    platform: str | None = None
 
     @property
     def is_color(self) -> bool:
@@ -412,7 +371,7 @@ def _enum_values_from_doc(doc: str) -> list[str]:
             in_item = True
             content = stripped[1:]
         elif in_item and stripped.startswith("`"):
-            content = stripped          # a wrapped continuation of the value list
+            content = stripped
         else:
             in_item = False
             continue
@@ -425,7 +384,6 @@ def _classify(opt: Option) -> None:
     name, dflt = opt.name, opt.default
     doc_low = opt.doc.lower()
 
-    # reloadability hints
     if "cannot be reloaded at runtime" in doc_low or "fully restart" in doc_low \
             or "must fully restart" in doc_low:
         opt.reload_note = "needs full Ghostty restart"
@@ -452,12 +410,10 @@ def _classify(opt: Option) -> None:
         opt.values = ["true", "false"]
         return
 
-    # enum: bulleted backtick values in the docs where the default is one of them
     cands = _enum_values_from_doc(opt.doc)
     cands = [c for c in cands if " " not in c and len(c) <= 32]
     if cands and dflt and dflt in cands:
         opt.kind = "enum"
-        # de-dupe preserving order
         seen, uniq = set(), []
         for c in cands:
             if c not in seen:
@@ -471,7 +427,6 @@ def _classify(opt: Option) -> None:
         return
 
     if _INT_RE.match(dflt):
-        # a few integer-defaulted options are semantically fractional
         if "opacity" in name or name in ("minimum-contrast", "mouse-scroll-multiplier",
                                          "bell-audio-volume"):
             opt.kind = "float"
@@ -484,7 +439,6 @@ def _classify(opt: Option) -> None:
 
     if name.endswith("-color") or any(h in name for h in COLOR_HINTS) \
             or name.startswith("selection-") or name.startswith("search-"):
-        # padding-color is actually an enum; only treat as color if not enum
         if not opt.values:
             opt.kind = "color"
             return
@@ -492,7 +446,6 @@ def _classify(opt: Option) -> None:
     opt.kind = "text"
 
 
-# ordered category buckets
 CATEGORY_ORDER = [
     "Colors & Theme", "Font", "Cursor", "Window", "Spacing & Metrics",
     "Mouse", "Clipboard & Selection", "Quick Terminal", "Shell & Commands",
@@ -556,9 +509,6 @@ def _categorize(name: str) -> str:
     return "Advanced"
 
 
-# Doc phrases (all lowercase) that mark an option as exclusive to one OS. Kept
-# deliberately narrow and paired with a "mentions the other OS positively" guard
-# so cross-platform options (e.g. "supported on macOS and Linux") aren't hidden.
 _MAC_ONLY_HINTS = (
     "only supported on macos", "only implemented on macos", "only works on macos",
     "supported currently on macos", "no effect on linux", "no effect on other",
@@ -571,7 +521,6 @@ _LINUX_ONLY_HINTS = (
     "feature is only supported on gtk", "configuration only applies to gtk",
     "no effect on macos",
 )
-# If any of these appear, the option touches both platforms — never hide it.
 _CROSS_PLATFORM_HINTS = (
     "macos and linux", "macos and certain linux", "macos and on some linux",
     "macos and some linux", "linux and macos", "on macos and", "macos, linux",
@@ -657,17 +606,11 @@ def load_schema() -> dict[str, Option]:
     return options
 
 
-# --------------------------------------------------------------------------- #
-#  The config file: parse, edit in place, render, save
-# --------------------------------------------------------------------------- #
-
 class ConfigFile:
     """A Ghostty config file that can be edited while preserving layout."""
 
     KEY_RE = re.compile(r"^(\s*)([a-z0-9][a-z0-9-]*)(\s*=\s*)(.*?)(\s*)$")
     MANAGED_HEADER = "# ─────────── added by SpookiUI ───────────"
-    # Recognize the header written by earlier versions so we don't append a
-    # second managed section to configs they created.
     LEGACY_HEADERS = ("# ─────────── added by GhostlyConfig ───────────",)
 
     def __init__(self, path: str):
@@ -682,7 +625,6 @@ class ConfigFile:
         else:
             self.lines = []
 
-    # ---- reading -------------------------------------------------------- #
     def _key_at(self, i: int) -> tuple[str, str] | None:
         line = self.lines[i]
         stripped = line.lstrip()
@@ -713,7 +655,6 @@ class ConfigFile:
         vals = self.get_values(name)
         return vals[-1] if vals else None
 
-    # ---- writing (in memory) -------------------------------------------- #
     def _format_line(self, name: str, value: str, quote_style: str | None) -> str:
         v = value
         needs_quote = (" " in value or "\t" in value)
@@ -729,7 +670,6 @@ class ConfigFile:
             m = self.KEY_RE.match(old)
             quote = '"' if (m and m.group(4).startswith('"')) else None
             self.lines[i] = self._format_line(name, value, quote)
-            # collapse any earlier duplicates so last-wins is unambiguous
             for j in idxs[:-1]:
                 self.lines[j] = "# " + self.lines[j] + "  # (superseded)"
         else:
@@ -769,7 +709,6 @@ class ConfigFile:
     def render(self) -> str:
         return "\n".join(self.lines)
 
-    # ---- persistence ---------------------------------------------------- #
     def write(self, text: str | None = None) -> None:
         if text is None:
             text = self.render()
@@ -797,14 +736,10 @@ def _unquote(v: str) -> str:
     return v
 
 
-# --------------------------------------------------------------------------- #
-#  Ghostty control: validate + live reload
-# --------------------------------------------------------------------------- #
-
 def validate(text: str) -> tuple[bool, list[str]]:
     """Validate a full config file text. Returns (ok, error_lines)."""
     if not GHOSTTY:
-        return True, []  # can't validate; assume ok
+        return True, []
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".spookiui.cfg", delete=False) as tf:
         tf.write(text)
@@ -824,7 +759,6 @@ def validate(text: str) -> tuple[bool, list[str]]:
         line = line.strip()
         if not line:
             continue
-        # strip the temp path prefix for readability
         line = re.sub(re.escape(tmp) + r":?", "", line).lstrip(": ")
         errs.append(line)
     return (proc.returncode == 0 and not errs), errs
@@ -849,7 +783,7 @@ def _reload_macos() -> tuple[bool, str]:
     )
     try:
         proc = _run(["osascript", "-e", script], timeout=10)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return False, str(e)
     if proc.returncode == 0:
         return True, "reloaded"
@@ -868,7 +802,7 @@ def _ghostty_pids() -> list[int]:
     for args in (["pgrep", "-x", "ghostty"], ["pgrep", "-if", "ghostty"]):
         try:
             proc = _run(args, timeout=5)
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         for line in proc.stdout.split():
             try:
@@ -911,7 +845,7 @@ def is_ghostty_running() -> bool:
             return True
         proc = _run(["pgrep", "-if", "Ghostty.app"], timeout=5)
         return bool(proc.stdout.strip())
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -925,7 +859,6 @@ def list_themes() -> list[str]:
         line = line.strip()
         if not line:
             continue
-        # strip trailing " (resources)" / " (user)"
         line = re.sub(r"\s*\((resources|user)\)\s*$", "", line)
         themes.append(line)
     return themes
@@ -939,7 +872,6 @@ def list_fonts() -> list[str]:
     for line in proc.stdout.splitlines():
         if line and not line[0].isspace() and line.strip():
             fams.append(line.strip())
-    # de-dupe preserving order
     seen, out = set(), []
     for f in fams:
         if f not in seen:
@@ -951,8 +883,6 @@ def list_fonts() -> list[str]:
 _ACTIONS_CACHE: list[str] | None = None
 _ACTION_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
-# Keybind builder: modifiers Ghostty accepts, plus a curated list of named keys
-# for the "special key" picker (letters/digits are captured by pressing them).
 KEYBIND_MODS = ["super", "ctrl", "alt", "shift"]
 KEYBIND_MOD_ALIASES = {
     "cmd": "super", "command": "super", "control": "ctrl",
@@ -988,15 +918,6 @@ def list_actions() -> list[str]:
     return out
 
 
-# --------------------------------------------------------------------------- #
-#  Theme colour resolution (for the live colour preview)
-# --------------------------------------------------------------------------- #
-#
-# Themes are plain Ghostty config fragments (palette/background/foreground/…)
-# living in the user's themes dir or the Ghostty resources dir. We parse them
-# directly so we can render a colour card without applying anything. Everything
-# here degrades gracefully: a theme we can't find or read just yields no card.
-
 def ghostty_resources_dir() -> str | None:
     """Best-effort path to the Ghostty resources dir (contains `themes/`)."""
     d = os.environ.get("GHOSTTY_RESOURCES_DIR")
@@ -1010,7 +931,6 @@ def ghostty_resources_dir() -> str | None:
                 "~/Applications/Ghostty.app/Contents/Resources/ghostty"),
         ]
     if GHOSTTY:
-        # <prefix>/bin/ghostty  ->  <prefix>/share/ghostty
         prefix = os.path.dirname(os.path.dirname(os.path.realpath(GHOSTTY)))
         cands.append(os.path.join(prefix, "share", "ghostty"))
     cands += ["/usr/share/ghostty", "/usr/local/share/ghostty",
@@ -1103,10 +1023,6 @@ def parse_theme_colors(name: str) -> dict | None:
     return res
 
 
-# --------------------------------------------------------------------------- #
-#  Session controller shared by TUI + CLI
-# --------------------------------------------------------------------------- #
-
 class Session:
     def __init__(self):
         self.schema = load_schema()
@@ -1136,14 +1052,11 @@ class Session:
         return list(opt.defaults) if opt else []
 
     def is_overridden(self, name: str) -> bool:
-        # An option counts as changed only if it's present in the config *and*
-        # its effective value differs from Ghostty's default. Re-setting a key
-        # to its default value (e.g. toggling a bool back) must clear the mark.
         if not self.cfg.indices_of(name):
             return False
         opt = self.schema.get(name)
         if opt is None:
-            return True  # unknown key the user added by hand — treat as changed
+            return True
         if opt.is_list:
             return self.effective_list(name) != list(opt.defaults)
         return self.effective(name) != opt.default
@@ -1220,10 +1133,6 @@ class Session:
         return out
 
 
-# --------------------------------------------------------------------------- #
-#  Color helpers (for swatches)
-# --------------------------------------------------------------------------- #
-
 _HEX_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
 
 
@@ -1245,7 +1154,6 @@ def rgb_to_256(r: int, g: int, b: int) -> int:
         return (v - 35) // 40
     ri, gi, bi = to6(r), to6(g), to6(b)
     ci = 16 + 36 * ri + 6 * gi + bi
-    # grayscale ramp candidate
     avg = (r + g + b) // 3
     if avg < 8:
         gray = 232
@@ -1253,7 +1161,6 @@ def rgb_to_256(r: int, g: int, b: int) -> int:
         gray = 255
     else:
         gray = 232 + (avg - 8) // 10
-    # pick whichever is closer
     def cube_val(i):
         return 0 if i == 0 else 55 + i * 40
     cr, cg, cb = cube_val(ri), cube_val(gi), cube_val(bi)
@@ -1263,28 +1170,20 @@ def rgb_to_256(r: int, g: int, b: int) -> int:
     return ci if d_cube <= d_gray else gray
 
 
-# --------------------------------------------------------------------------- #
-#  The interactive TUI
-# --------------------------------------------------------------------------- #
-
 def run_tui(sess: "Session") -> None:
     import curses
     import locale
-    # Make curses render UTF-8 (slider bar, badges, box chars) regardless of how
-    # the process was started; addstr encodes via the locale's preferred codec.
     try:
         locale.setlocale(locale.LC_ALL, "")
     except locale.Error:
         pass
     try:
-        curses.set_escdelay(25)  # make single-ESC snappy, not a 1s wait
+        curses.set_escdelay(25)
     except Exception:
         pass
     try:
         curses.wrapper(lambda scr: App(scr, sess).run())
     except KeyboardInterrupt:
-        # Ctrl+C from inside a modal getch loop — wrapper has already restored
-        # the terminal in its finally, so just exit quietly.
         pass
 
 
@@ -1295,17 +1194,15 @@ class App:
         self.scr = stdscr
         self.sess = sess
         self.status = ""
-        self.status_kind = "info"     # info|ok|error|warn
-        self.focus = "cats"           # cats|opts
+        self.status_kind = "info"
+        self.focus = "cats"
         self.cat_idx = 0
         self.opt_idx = 0
         self.opt_scroll = 0
         self.doc_scroll = 0
         self.search = ""
-        self.search_mode = False      # showing flat search results
+        self.search_mode = False
 
-        # options per category, sorted alpha — OS-exclusive options that don't
-        # apply to the current platform are hidden.
         self.by_cat: dict[str, list[str]] = {}
         for c in CATEGORY_ORDER:
             names = sorted(n for n, o in sess.schema.items()
@@ -1315,12 +1212,10 @@ class App:
         self.categories = [c for c in CATEGORY_ORDER if c in self.by_cat]
 
         self._swatch_cache: dict[int, int] = {}
-        self._pair_cache: dict[tuple, int] = {}   # (fg_idx, bg_idx) -> pair
+        self._pair_cache: dict[tuple, int] = {}
         self._next_pair = 32
         self._init_colors()
 
-        # Check GitHub for a newer release in the background so startup isn't
-        # blocked on the network. Result is picked up on the next redraw.
         self._update_info: dict | None = None
         self._update_announced = False
         self._start_update_check()
@@ -1335,12 +1230,11 @@ class App:
         def worker():
             try:
                 self._update_info = check_for_update()
-            except Exception:  # noqa: BLE001 — never let the checker crash the TUI
+            except Exception:
                 self._update_info = None
 
         threading.Thread(target=worker, daemon=True).start()
 
-    # ---- colors --------------------------------------------------------- #
     def _init_colors(self):
         c = self.curses
         c.start_color()
@@ -1349,8 +1243,6 @@ class App:
             bg = -1
         except Exception:
             bg = c.COLOR_BLACK
-        # 1 header, 2 footer hint, 3 selected, 4 dim, 5 accent, 6 ok,
-        # 7 error, 8 warn, 9 category-selected, 10 title
         c.init_pair(1, c.COLOR_BLACK, c.COLOR_CYAN)
         c.init_pair(2, c.COLOR_CYAN, bg)
         c.init_pair(3, c.COLOR_BLACK, c.COLOR_WHITE)
@@ -1406,7 +1298,6 @@ class App:
         self._pair_cache[key] = pair
         return pair
 
-    # ---- colour preview ------------------------------------------------- #
     def _effective_colors(self, theme_override=None) -> dict:
         """Resolve the colours that would actually render: Ghostty defaults,
         then the active (or overridden) theme, then explicit config overrides.
@@ -1435,7 +1326,7 @@ class App:
                 bg = tc["background"] or bg
                 cursor = tc["cursor"] or cursor
 
-        if theme_override is None:  # layer explicit config overrides on top
+        if theme_override is None:
             fo = self.sess.cfg.get_value("foreground")
             if fo:
                 fg = fo
@@ -1475,7 +1366,6 @@ class App:
         rows += 1
         return rows
 
-    # ---- geometry helpers ---------------------------------------------- #
     def dims(self):
         h, w = self.scr.getmaxyx()
         return h, w
@@ -1490,7 +1380,6 @@ class App:
         except self.curses.error:
             pass
 
-    # ---- current option ------------------------------------------------- #
     def current_names(self) -> list[str]:
         if self.search_mode:
             return self._search_results
@@ -1505,7 +1394,6 @@ class App:
         self.opt_idx = max(0, min(self.opt_idx, len(names) - 1))
         return self.sess.schema[names[self.opt_idx]]
 
-    # ---- draw ----------------------------------------------------------- #
     def run(self):
         c = self.curses
         while True:
@@ -1513,7 +1401,7 @@ class App:
             try:
                 ch = self.scr.getch()
             except KeyboardInterrupt:
-                ch = 3  # Ctrl+C arrived as a signal — treat as a graceful quit
+                ch = 3
             if ch == c.KEY_RESIZE:
                 continue
             if not self.handle_key(ch):
@@ -1521,8 +1409,6 @@ class App:
 
     def draw(self):
         c = self.curses
-        # Announce a newly-discovered update once, without clobbering a message
-        # the user is already looking at.
         info = self._update_info
         if info and info.get("outdated") and not self._update_announced:
             self._update_announced = True
@@ -1558,7 +1444,6 @@ class App:
         opt_w = max(28, min(40, (w - cat_w) // 2))
         det_x = cat_w + opt_w + 1
 
-        # categories
         for i, cat in enumerate(self.categories):
             y = top + i
             if y > bottom:
@@ -1571,12 +1456,10 @@ class App:
                 attr = c.color_pair(9) | c.A_BOLD if self.focus == "cats" \
                     else c.color_pair(5) | c.A_BOLD
             self.safe(y, 0, label.ljust(cat_w)[:cat_w], attr)
-        # vertical separators
         for y in range(top, bottom + 1):
             self.safe(y, cat_w, "│", c.color_pair(4))
             self.safe(y, cat_w + opt_w, "│", c.color_pair(4))
 
-        # option list
         names = self.current_names()
         rows = bottom - top + 1
         if self.opt_idx < self.opt_scroll:
@@ -1599,11 +1482,9 @@ class App:
             self.safe(y, x0, mark, (c.color_pair(6) if over else c.color_pair(4)) | (c.A_BOLD if selected else 0))
             nm = name[: opt_w - 4]
             self.safe(y, x0 + 2, nm.ljust(opt_w - 3)[: opt_w - 3], base)
-        # scroll indicator
         if len(names) > rows:
             self.safe(top, cat_w + opt_w - 1, "↕", c.color_pair(5))
 
-        # detail pane
         self._draw_detail(top, bottom, det_x, w - det_x - 1)
 
     def _short_value(self, opt: Option) -> str:
@@ -1649,14 +1530,12 @@ class App:
         if opt.values and opt.kind in ("enum", "bool"):
             self.safe(y, x, "choices: " + ", ".join(opt.values), c.color_pair(5)); y += 1
         y += 1
-        # live colour preview for colour-related options
         if (opt.name == "theme" or opt.kind in ("color", "theme", "palette")
                 or opt.category == "Colors & Theme") and y + 3 <= bottom:
             self.safe(y, x, "─ preview " + "─" * max(0, width - 10), c.color_pair(4)); y += 1
             used = self._draw_color_preview(y, x, width, self._effective_colors())
             if used:
                 y += used + 1
-        # docs
         self.safe(y, x, "─ docs " + "─" * max(0, width - 7), c.color_pair(4)); y += 1
         doc_lines = self._wrap(opt.doc or "(no documentation)", width)
         for line in doc_lines[self.doc_scroll:]:
@@ -1698,10 +1577,8 @@ class App:
     def _draw_footer(self, h, w):
         c = self.curses
         sy = h - 2
-        # status line
         kindmap = {"ok": 6, "error": 7, "warn": 8, "info": 2}
         self.safe(sy, 0, self.status[:w], c.color_pair(kindmap.get(self.status_kind, 2)) | c.A_BOLD)
-        # hints
         if self.search_mode:
             hints = " type to filter · ↑↓ move · Enter edit · Esc exit search "
         elif self.focus == "cats":
@@ -1711,13 +1588,12 @@ class App:
         bar = hints + " " * max(0, w - len(hints))
         self.safe(h - 1, 0, bar[:w], c.color_pair(1))
 
-    # ---- key handling --------------------------------------------------- #
     def handle_key(self, ch) -> bool:
         c = self.curses
         if self.search_mode:
             return self._handle_search_key(ch)
 
-        if ch in (ord("q"), ord("Q"), 3, 24):  # q, Ctrl+C, Ctrl+X
+        if ch in (ord("q"), ord("Q"), 3, 24):
             return self._quit()
         if ch == ord("?"):
             self._help()
@@ -1796,7 +1672,6 @@ class App:
             self.edit_current()
         return True
 
-    # ---- search --------------------------------------------------------- #
     def _enter_search(self):
         self.search = ""
         self.search_mode = True
@@ -1806,7 +1681,7 @@ class App:
 
     def _handle_search_key(self, ch) -> bool:
         c = self.curses
-        if ch in (27,):  # Esc
+        if ch in (27,):
             self.search_mode = False
             self.focus = "opts"
             self.opt_idx = self.opt_scroll = 0
@@ -1838,7 +1713,6 @@ class App:
         self._msg(f"search: {self.search}   ({len(self._search_results)} matches)", "info")
         return True
 
-    # ---- editing dispatch ---------------------------------------------- #
     def edit_current(self):
         opt = self.current_option()
         if not opt:
@@ -1859,7 +1733,7 @@ class App:
                 self._edit_number(opt)
         elif opt.kind in ("list", "keybind", "palette"):
             self._edit_list(opt)
-        else:  # color, text
+        else:
             self._edit_text(opt)
 
     def _commit_scalar(self, opt: Option, value: str, preview=False):
@@ -1872,7 +1746,7 @@ class App:
         text = self.sess.cfg.render()
         ok, errs = validate(text)
         if not ok:
-            self.sess.cfg.lines = snap  # roll back invalid change
+            self.sess.cfg.lines = snap
             return False, errs
         self.sess.ensure_backup()
         self.sess.cfg.write(text)
@@ -1937,7 +1811,6 @@ class App:
         else:
             self._msg("invalid: " + (errs[0] if errs else "?"), "error")
 
-    # ---- restore + status helpers -------------------------------------- #
     def _snap(self) -> list[str]:
         return list(self.sess.cfg.lines)
 
@@ -2057,7 +1930,6 @@ class App:
         snap = self._snap()
         is_float = opt.kind == "float" or step < 1
         nsteps = max(1, int(round((hi - lo) / step)))
-        # Track position as an integer step index to avoid float drift.
         cur = self.sess.effective(opt.name)
         try:
             start = float(cur) if cur not in ("", None) else lo
@@ -2068,7 +1940,7 @@ class App:
         def value(i):
             return hi if i >= nsteps else lo + i * step
 
-        pending = True   # preview on entry so the live value matches the knob
+        pending = True
         while True:
             self._draw_slider(opt, lo, hi, value(idx), is_float, idx / nsteps)
             if pending:
@@ -2150,7 +2022,6 @@ class App:
             self._restore(snap)
         self._report(opt, new.strip(), ok, errs)
 
-    # ---- list editor ---------------------------------------------------- #
     def _edit_list(self, opt: Option):
         c = self.curses
         values = self.sess.effective_list(opt.name)[:]
@@ -2178,7 +2049,6 @@ class App:
             self.scr.refresh()
             ch = self.scr.getch()
             if ch in (27,):
-                # nothing is persisted until Enter, so cancelling is a no-op
                 self._msg("cancelled", "info"); return
             if ch in (ord("\n"), c.KEY_ENTER, 10, 13):
                 ok, errs = self._commit_list(opt, values)
@@ -2204,7 +2074,6 @@ class App:
                 del values[sel]
                 sel = max(0, min(sel, len(values) - 1))
 
-    # ---- keybind builder ------------------------------------------------ #
     def _assemble_keybind(self, state) -> str:
         mods = [m for m in KEYBIND_MODS if state["mods"][m]]
         trigger = "+".join(mods + ([state["key"]] if state["key"] else []))
@@ -2241,7 +2110,7 @@ class App:
         if initial:
             self._parse_keybind_into(initial, state)
         row, modsel, error = 0, 0, ""
-        NROWS = 5   # 0 mods, 1 key, 2 action, 3 args, 4 save
+        NROWS = 5
         while True:
             self._draw_keybind_form(state, row, modsel, error)
             ch = self.scr.getch()
@@ -2252,24 +2121,24 @@ class App:
             if ch in (c.KEY_UP, c.KEY_BTAB, 353):
                 row = (row - 1) % NROWS; continue
             error = ""
-            if row == 0:                       # modifiers
+            if row == 0:
                 if ch in (c.KEY_LEFT,):
                     modsel = (modsel - 1) % len(KEYBIND_MODS)
                 elif ch in (c.KEY_RIGHT,):
                     modsel = (modsel + 1) % len(KEYBIND_MODS)
                 elif ch in (ord(" "),):
                     m = KEYBIND_MODS[modsel]; state["mods"][m] = not state["mods"][m]
-            elif row == 1:                     # key
+            elif row == 1:
                 if ch in (ord("\n"), c.KEY_ENTER, 10, 13):
                     pick = self._picker("special key", KEYBIND_NAMED_KEYS, state["key"])
                     if pick:
                         state["key"] = pick
                 elif ch in (c.KEY_BACKSPACE, 127, 8, c.KEY_DC):
                     state["key"] = ""
-                elif 32 < ch < 127:            # printable (not space) -> capture it
+                elif 32 < ch < 127:
                     k = chr(ch)
                     state["key"] = k.lower() if k.isalpha() else k
-            elif row == 2:                     # action
+            elif row == 2:
                 if ch in (ord("\n"), c.KEY_ENTER, 10, 13):
                     acts = list_actions()
                     if acts:
@@ -2278,14 +2147,14 @@ class App:
                             state["action"] = pick
                     else:
                         error = "could not load Ghostty actions"
-            elif row == 3:                     # optional args
+            elif row == 3:
                 if ch in (c.KEY_BACKSPACE, 127, 8):
                     state["args"] = state["args"][:-1]
                 elif ch in (ord("\n"), c.KEY_ENTER, 10, 13):
                     row = 4
                 elif 32 <= ch < 127:
                     state["args"] += chr(ch)
-            elif row == 4:                     # save
+            elif row == 4:
                 if ch in (ord("\n"), c.KEY_ENTER, 10, 13):
                     if not state["key"]:
                         error, row = "pick a key first", 1; continue
@@ -2337,7 +2206,6 @@ class App:
                   c.color_pair(1))
         self.scr.refresh()
 
-    # ---- primitive input widgets --------------------------------------- #
     def _prompt_bar(self, label, buf, hint):
         c = self.curses
         h, w = self.dims()
@@ -2391,7 +2259,6 @@ class App:
         self.scr.timeout(90)
         try:
             while True:
-                # debounced live preview
                 if preview and self.sess.auto_apply and filtered:
                     want = filtered[sel]
                     if want != last_preview and (time.monotonic() - last_move) > 0.11:
@@ -2433,7 +2300,6 @@ class App:
         self.safe(1, 0, f" filter: {query}", c.color_pair(5) | c.A_BOLD)
         top = 3
         rows = h - 5
-        # reserve a right-hand panel for `side` when the screen is wide enough
         side_x = None
         list_w = w
         if side and w >= 56:
@@ -2480,7 +2346,6 @@ class App:
         yy = y + 2 + used + 1
         self.safe(yy, x, f"bg {colors['bg']}   fg {colors['fg']}"[:width], c.color_pair(4))
 
-    # ---- overlays ------------------------------------------------------- #
     def _changes_overlay(self):
         c = self.curses
         ovr = self.sess.overrides()
@@ -2582,10 +2447,6 @@ class App:
         self.status_kind = kind
 
 
-# --------------------------------------------------------------------------- #
-#  Non-interactive CLI
-# --------------------------------------------------------------------------- #
-
 def cli_list(sess: Session, args) -> int:
     cats = CATEGORY_ORDER if not args.category else [args.category]
     show_all = getattr(args, "all", False)
@@ -2643,7 +2504,6 @@ def cli_set(sess: Session, args) -> int:
     else:
         sess.stage_scalar(args.key, args.value[0])
 
-    # always validate before writing, reload or not
     ok, errs = validate(sess.cfg.render())
     if not ok:
         sess.cfg.lines = snap
@@ -2797,7 +2657,7 @@ def main(argv=None) -> int:
 
     try:
         sess = Session()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"error: {e}", file=sys.stderr)
         return 3
 

@@ -2,3 +2,4 @@ CLAUDE.md
 __pycache__/
 *.pyc
 .session
+.claude

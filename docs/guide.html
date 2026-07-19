@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SpookiUI — User Guide</title>
+<style>
+  :root{
+    --ink:#1f2430; --muted:#5b6472; --faint:#8b93a3; --line:#e5e7eb;
+    --accent:#6d3bf5; --accent-soft:#efe9ff; --accent-ink:#4a24b8;
+    /* terminal palette (Catppuccin Mocha-ish, matching examples) */
+    --t-bg:#1e1e2e; --t-fg:#cdd6f4; --t-dim:#9aa0b3; --t-cyan:#89dceb;
+    --t-yellow:#f9e2af; --t-green:#a6e3a1; --t-red:#f38ba8; --t-mauve:#cba6f7;
+    --t-bar:#94e2d5; --t-barink:#11212b; --t-sel:#f9e2af;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-print-color-adjust:exact; print-color-adjust:exact}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    color:var(--ink); margin:0; font-size:10.7pt; line-height:1.55;
+  }
+  @page{ size:A4; margin:17mm 16mm 18mm; }
+  h1,h2,h3{line-height:1.2; color:var(--ink); font-weight:700}
+  h2{font-size:19pt; margin:0 0 2px; letter-spacing:-.2px}
+  h2 .num{color:var(--accent); font-weight:800; margin-right:.5rem}
+  h3{font-size:12.5pt; margin:18px 0 6px}
+  p{margin:.5rem 0}
+  a{color:var(--accent-ink); text-decoration:none}
+  code{font-family:"SF Mono",Menlo,Consolas,monospace; font-size:9.2pt;
+       background:#f4f4f7; padding:1px 5px; border-radius:4px; color:#3b2d63}
+  .lead{color:var(--muted); font-size:11.5pt}
+  .section{page-break-before:always; padding-top:4px}
+  .kicker{color:var(--accent); font-weight:700; font-size:9pt; letter-spacing:.14em;
+          text-transform:uppercase; margin-bottom:4px}
+  hr.rule{border:0; border-top:2px solid var(--accent); width:46px; margin:10px 0 16px}
+  /* callouts */
+  .note{background:var(--accent-soft); border-left:3px solid var(--accent);
+        padding:9px 13px; border-radius:0 7px 7px 0; margin:12px 0; font-size:9.8pt}
+  .note b{color:var(--accent-ink)}
+  /* tables */
+  table{border-collapse:collapse; width:100%; margin:12px 0; font-size:9.5pt}
+  th,td{text-align:left; padding:6px 9px; border-bottom:1px solid var(--line); vertical-align:top}
+  th{color:var(--muted); font-weight:600; font-size:8.4pt; text-transform:uppercase; letter-spacing:.05em}
+  td.k{white-space:nowrap}
+  kbd{font-family:"SF Mono",Menlo,monospace; font-size:8.6pt; background:#111827; color:#fff;
+      padding:1px 6px; border-radius:5px; box-shadow:0 1px 0 #374151}
+  /* terminal figure */
+  .term{background:var(--t-bg); border-radius:9px; overflow:hidden; margin:12px 0 6px;
+        box-shadow:0 6px 22px rgba(20,16,40,.18); break-inside:avoid}
+  .term .bar{background:#181825; padding:7px 11px; display:flex; align-items:center; gap:6px}
+  .term .dot{width:9px; height:9px; border-radius:50%}
+  .term .bar .t{color:#6c7086; font-size:8.4pt; margin-left:8px; font-family:"SF Mono",Menlo,monospace}
+  .term pre{margin:0; padding:11px 13px; color:var(--t-fg); font-size:8.1pt; line-height:1.42;
+            font-family:"SF Mono",Menlo,Consolas,monospace; white-space:pre; overflow:hidden}
+  .cap{color:var(--faint); font-size:8.6pt; margin:2px 0 16px; font-style:italic}
+  /* terminal token colors */
+  .cbar{background:var(--t-bar); color:var(--t-barink)}
+  .csel{background:var(--t-sel); color:#11212b}
+  .dim{color:var(--t-dim)} .cy{color:var(--t-cyan)} .ye{color:var(--t-yellow)}
+  .gr{color:var(--t-green)} .rd{color:var(--t-red)} .mv{color:var(--t-mauve)}
+  .sw{display:inline-block}
+  ul.tight{margin:.4rem 0; padding-left:1.1rem} ul.tight li{margin:2px 0}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:0 26px}
+</style>
+</head>
+<body>
+
+<!-- ============================ COVER ============================ -->
+<div style="padding-top:34mm">
+  <div style="font-size:52pt; line-height:1">👻</div>
+  <div style="height:14px"></div>
+  <div class="kicker">Live configurator for the Ghostty terminal</div>
+  <h1 style="font-size:40pt; letter-spacing:-1px; margin:.1rem 0">SpookiUI</h1>
+  <div style="font-size:15pt; color:var(--muted); max-width:78%; margin-top:6px">
+    Browse and edit <em>every</em> Ghostty option from a friendly terminal UI —
+    and watch your changes apply <b>live</b>, safely, with a validate-and-roll-back
+    net under every edit.
+  </div>
+  <div style="margin-top:16px; font-weight:700; color:var(--accent-ink); font-size:11pt">
+    User Guide &nbsp;·&nbsp; Version 1.7.0
+  </div>
+  <div style="height:24px"></div>
+
+  <div class="term" style="max-width:none">
+    <div class="bar"><span class="dot" style="background:#ff5f56"></span>
+      <span class="dot" style="background:#ffbd2e"></span>
+      <span class="dot" style="background:#27c93f"></span>
+      <span class="t">spookiui</span></div>
+<pre><span class="cbar"> SpookiUI · live Ghostty configurator                      AUTO-APPLY:ON · live </span>
+ <span class="csel"> Colors &amp; Theme      </span><span class="dim">│</span> <span class="gr">●</span> theme             Catppuccin Mocha <span class="dim">│</span> <span class="mv">theme</span>
+ Font                 <span class="dim">│</span>   background         #1e1e2e          <span class="dim">│</span> <span class="dim">type: theme</span>
+ Cursor               <span class="dim">│</span>   foreground         #cdd6f4          <span class="dim">│</span> value: Catppuccin Mocha
+ Window               <span class="dim">│</span> <span class="gr">●</span> background-opacity  0.95            <span class="dim">│</span> <span class="dim">─ preview ─────────────</span>
+ Spacing &amp; Metrics    <span class="dim">│</span>   cursor-style       block            <span class="dim">│</span> <span style="color:#45475a">██</span><span class="rd">██</span><span class="gr">██</span><span class="ye">██</span><span style="color:#89b4fa">██</span><span class="mv">██</span><span style="color:#94e2d5">██</span><span class="dim">██</span>
+ Keybindings          <span class="dim">│</span>   font-family        JetBrains…       <span class="dim">│</span> <span style="color:#585b70">██</span><span style="color:#f37799">██</span><span style="color:#89d88b">██</span><span style="color:#ebd391">██</span><span style="color:#74a8fc">██</span><span style="color:#f2aede">██</span><span style="color:#6bd7ca">██</span><span style="color:#bac2de">██</span>
+ <span class="dim">…</span>                    <span class="dim">│</span>   <span class="dim">…</span>                                 <span class="dim">│</span> <span style="background:#1e1e2e;color:#cdd6f4"> AaBbCc 123 </span>
+<span class="cbar"> ↑↓ option · Enter edit · / search · p profiles · c check · ? help · q quit    </span></pre>
+  </div>
+</div>
+
+<!-- ============================ 1. WHAT ============================ -->
+<section class="section">
+  <div class="kicker">Getting oriented</div>
+  <h2><span class="num">1</span>What SpookiUI is</h2>
+  <hr class="rule">
+  <p class="lead">SpookiUI is a single-file terminal app that turns Ghostty's plain-text
+  config into a guided, safe, live-updating experience.</p>
+  <p>Ghostty is configured through <code>~/.config/ghostty/config</code> and can't watch
+  that file for changes — you normally edit text and trigger a reload by hand. SpookiUI
+  closes that loop: it writes the file <b>and</b> triggers the reload for you, so when you
+  run it inside a Ghostty window the very terminal you're in repaints as you edit.</p>
+
+  <div class="grid2">
+    <div>
+      <h3>Every option, discovered live</h3>
+      <p>Options aren't hard-coded. SpookiUI reads them from your installed Ghostty
+      (<code>ghostty +show-config --default --docs</code>), so it always matches your
+      version — around 200 options across 13 categories, each with its docs.</p>
+    </div>
+    <div>
+      <h3>Safe by construction</h3>
+      <p>Every change is validated by Ghostty itself before it's saved. An invalid value
+      is rejected and rolled back — it never reaches your config. A dated backup is kept,
+      and you can revert a whole session or restore Ghostty's defaults at any time.</p>
+    </div>
+  </div>
+
+  <div class="note"><b>Two ways to drive it.</b> The interactive TUI (just run
+  <code>spookiui</code>) and a scriptable CLI (<code>spookiui set</code>,
+  <code>get</code>, <code>doctor</code>, …) share the exact same core logic, so anything
+  you can click you can also script.</div>
+
+  <h3>Requirements</h3>
+  <ul class="tight">
+    <li><b>Python 3.8+</b> — standard library only, no <code>pip install</code> ever.</li>
+    <li>The <b>ghostty</b> binary on your <code>PATH</code> (or <code>/Applications/Ghostty.app</code>).</li>
+    <li>macOS or Linux. Live reload works on both (details in §7).</li>
+  </ul>
+</section>
+
+<!-- ============================ 2. INSTALL ============================ -->
+<section class="section">
+  <div class="kicker">Setup</div>
+  <h2><span class="num">2</span>Installing</h2>
+  <hr class="rule">
+
+  <h3>Run straight from the repo</h3>
+  <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="t">bash</span></div>
+<pre><span class="gr">$</span> git clone https://github.com/mattj85/SpookiUI.git
+<span class="gr">$</span> cd SpookiUI
+<span class="gr">$</span> ./spookiui.py</pre></div>
+
+  <h3>Put <code>spookiui</code> on your PATH</h3>
+  <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="t">bash</span></div>
+<pre><span class="gr">$</span> ./install.sh                     <span class="dim"># installs to ~/.local/bin</span>
+<span class="gr">$</span> PREFIX=/usr/local ./install.sh   <span class="dim"># system-wide (may need sudo)</span></pre></div>
+  <p>The installer checks Python 3.8+, warns if <code>ghostty</code> is missing, and symlinks
+  the script onto your PATH. To reverse it, run <code>./uninstall.sh</code> (it only removes
+  the symlink it created — never your config, and never a Homebrew install).</p>
+
+  <h3>Homebrew (macOS &amp; Linux)</h3>
+  <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="t">bash</span></div>
+<pre><span class="gr">$</span> brew install mattj85/spookiui/spookiui
+<span class="gr">$</span> brew upgrade  mattj85/spookiui/spookiui   <span class="dim"># later, to update</span></pre></div>
+  <div class="note">Installed via Homebrew? Update with <code>brew upgrade</code> — SpookiUI's
+  in-app updater detects a Homebrew install and defers to it, so the two never fight.</div>
+</section>
+
+<!-- ============================ 3. TOUR ============================ -->
+<section class="section">
+  <div class="kicker">The interface</div>
+  <h2><span class="num">3</span>A tour of the TUI</h2>
+  <hr class="rule">
+  <p>The screen is three panes: <b>categories</b> on the left, the <b>options</b> in the
+  selected category in the middle, and a <b>detail</b> pane on the right with the current
+  value, default, docs, and — for colour options — a live preview.</p>
+
+  <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="t">spookiui</span></div>
+<pre><span class="cbar"> SpookiUI · live Ghostty configurator                      AUTO-APPLY:ON · live </span>
+ <span class="csel"> Colors &amp; Theme      </span><span class="dim">│</span> <span class="gr">●</span> background-opacity  0.95            <span class="dim">│</span> <span class="mv">background-opacity</span>
+ Font                 <span class="dim">│</span>   cursor-style       block            <span class="dim">│</span> <span class="dim">type: float</span>
+ Cursor               <span class="dim">│</span> <span class="gr">●</span> theme              Catppuccin Mocha <span class="dim">│</span> value: 0.95
+ Window               <span class="dim">│</span>   window-padding-x   2                <span class="dim">│</span> default: 1
+ Mouse                <span class="dim">│</span>   <span class="dim">…</span>                                 <span class="dim">│</span> <span class="gr">changed: yes</span>
+ Keybindings          <span class="dim">│</span>                                      <span class="dim">│</span> <span class="dim">─ docs ────────────────</span>
+ macOS                <span class="dim">│</span>                                      <span class="dim">│</span> The opacity level of the
+ <span class="mv">⚙ Utils</span>              <span class="dim">│</span>                                      <span class="dim">│</span> background. 1 is opaque…
+<span class="cbar"> ↑↓ option · Enter/→ edit · ← back · u reset · s save · / search · ? help · q  </span></pre></div>
+  <p class="cap">The main view. A green ● marks options you've changed from their default.</p>
+
+  <h3>Moving around</h3>
+  <table>
+    <tr><th>Key</th><th>Does</th></tr>
+    <tr><td class="k"><kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd></td><td>Move within a pane</td></tr>
+    <tr><td class="k"><kbd>Tab</kbd></td><td>Switch between the categories and options panes</td></tr>
+    <tr><td class="k"><kbd>→</kbd> / <kbd>Enter</kbd> / <kbd>l</kbd></td><td>Enter a category, or edit the selected option</td></tr>
+    <tr><td class="k"><kbd>←</kbd> / <kbd>h</kbd></td><td>Back to the category list</td></tr>
+    <tr><td class="k"><kbd>PgUp</kbd> <kbd>PgDn</kbd></td><td>Jump by ten</td></tr>
+    <tr><td class="k"><kbd>/</kbd></td><td>Search every option by name or documentation</td></tr>
+    <tr><td class="k"><kbd>?</kbd></td><td>Full in-app help &nbsp;·&nbsp; <kbd>q</kbd> quit</td></tr>
+  </table>
+
+  <div class="note"><b>Only what's relevant.</b> Options that apply solely to the other
+  operating system (macOS-only on Linux, GTK/X11 on macOS) are hidden automatically. With a
+  <b>Nerd Font</b> as your terminal font, each category also shows an icon; otherwise SpookiUI
+  runs cleanly without them.</div>
+</section>
+
+<!-- ============================ 4. EDITING ============================ -->
+<section class="section">
+  <div class="kicker">Making changes</div>
+  <h2><span class="num">4</span>Editing options</h2>
+  <hr class="rule">
+  <p>Press <kbd>Enter</kbd> on any option and SpookiUI opens the right editor for its type.
+  When <b>auto-apply</b> is on (the default), the change is validated, written, and reloaded
+  live as you go; pickers even preview the highlighted value and snap back if you cancel.</p>
+
+  <h3>Themes — with a live colour card</h3>
+  <p>The theme picker shows a swatch card for the highlighted theme — its full 16-colour
+  palette and a sample line — so you can see a theme <em>before</em> applying it.</p>
+  <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="t">theme picker</span></div>
+<pre><span class="cbar"> select theme  (463)                                                            </span>
+ filter: <span class="ye">catppuccin</span>
+   <span class="dim">•</span> Catppuccin Frappe          <span class="mv">Catppuccin Mocha</span>
+   <span class="dim">•</span> Catppuccin Latte
+ <span class="csel">→ Catppuccin Mocha         </span>       <span style="color:#45475a">██</span><span class="rd">██</span><span class="gr">██</span><span class="ye">██</span><span style="color:#89b4fa">██</span><span class="mv">██</span><span style="color:#94e2d5">██</span><span class="dim">██</span>
+   <span class="dim">•</span> Catppuccin Macchiato              <span style="color:#585b70">██</span><span style="color:#f37799">██</span><span style="color:#89d88b">██</span><span style="color:#ebd391">██</span><span style="color:#74a8fc">██</span><span style="color:#f2aede">██</span><span style="color:#6bd7ca">██</span><span style="color:#bac2de">██</span>
+                                        <span style="background:#1e1e2e;color:#cdd6f4"> AaBbCc 123 #!$ </span>
+                                     bg #1e1e2e   fg #cdd6f4
+<span class="cbar"> ● LIVE PREVIEW · type to filter · ↑↓ move · Enter select · Esc cancel         </span></pre></div>
+  <p class="cap">Colours are read straight from the theme file, so the card is exact.</p>
+
+  <h3>Bounded numbers — a visual slider</h3>
+  <p>Opacity, <code>minimum-contrast</code> and similar ranged values open a slider you
+  nudge with the arrow keys instead of typing a number.</p>
+  <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="t">background-opacity</span></div>
+<pre><span class="cbar"> set · background-opacity                                                       </span>
+ The opacity level of the background. 1 is opaque, 0 transparent.
+
+     0  <span class="ye">━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="gr">●</span><span class="dim">────────────</span>  1
+
+                              <span class="mv">0.85</span>
+                            default: 1
+<span class="cbar"> ←/→ adjust · PgUp/PgDn ×10 · Home/End min/max · Enter apply · Esc cancel       </span></pre></div>
+
+  <h3>Keybindings — a guided builder</h3>
+  <p>Editing a keybind opens a form: toggle the modifiers, press or pick the key, and choose
+  the action from Ghostty's own list. The result is validated before it's added — no more
+  guessing at <code>trigger=action</code> syntax.</p>
+  <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="t">build keybind</span></div>
+<pre><span class="cbar"> build keybind                                                                  </span>
+ Modifiers:  <span class="csel">[x] super</span>  [ ] ctrl  [ ] alt  <span class="ye">[x] shift</span>
+             <span class="dim">(super = ⌘ Command on macOS)</span>
+ Key:      <span class="ye">k</span>            <span class="dim">type a key · Enter → named-key list</span>
+ Action:   <span class="ye">new_window</span>   <span class="dim">Enter → choose from Ghostty actions</span>
+ Args:     —          <span class="dim">optional, e.g. 1  or  mixed</span>
+
+ Result: <span class="gr">super+shift+k=new_window</span>
+ <span class="mv">▸ Save this binding</span>
+<span class="cbar"> Tab/↑↓ field · ←/→ pick mod · Space toggle · Enter pick/save · Esc cancel      </span></pre></div>
+
+  <h3>The rest</h3>
+  <table>
+    <tr><th>Type</th><th>Editor</th></tr>
+    <tr><td class="k">Boolean</td><td>Toggles instantly on <kbd>Enter</kbd></td></tr>
+    <tr><td class="k">Enum</td><td>Searchable picker listing <em>every</em> documented choice</td></tr>
+    <tr><td class="k">Font</td><td>Picker over installed monospace families, previewed live</td></tr>
+    <tr><td class="k">Colour / text</td><td>Type a value (<code>#rrggbb</code> or a name); colours show a swatch and preview</td></tr>
+    <tr><td class="k">Lists (palette, env, …)</td><td>Add / edit / delete entries</td></tr>
+  </table>
+
+  <div class="note"><b>Staged edits.</b> Press <kbd>a</kbd> to turn auto-apply off — edits are
+  held in memory and nothing touches disk until you press <kbd>s</kbd> to save and reload
+  them all at once. <kbd>R</kbd> reverts the whole session; <kbd>X</kbd> wipes back to
+  Ghostty's defaults (a backup is always kept).</div>
+</section>
+
+<!-- ============================ 5. PROFILES ============================ -->
+<section class="section">
+  <div class="kicker">Managing setups</div>
+  <h2><span class="num">5</span>Profiles</h2>
+  <hr class="rule">
+  <p>Profiles are named snapshots of your whole config. Save your current setup, tweak
+  freely, and load any profile back later. Press <kbd>p</kbd> for the profiles view.</p>
+  <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="t">profiles</span></div>
+<pre><span class="cbar"> profiles                                                                       </span>
+ <span class="dim">saved in ~/.local/share/spookiui/profiles</span>
+
+ <span class="csel">→ dark            </span>
+   light
+   work
+<span class="cbar"> s save · Enter/l load · d delete · t light↔dark · Esc close                   </span></pre></div>
+  <p>Save profiles named <code>light</code> and <code>dark</code> and the <kbd>t</kbd> key
+  (or <code>spookiui profile toggle</code>) flips between them instantly — a one-key day/night
+  switch. Loading a profile is validated and backs up your current config first, exactly like
+  any other change. Profiles live outside Ghostty's config directory, so Ghostty never reads them.</p>
+</section>
+
+<!-- ============================ 6. DOCTOR + UTILS ============================ -->
+<section class="section">
+  <div class="kicker">Keeping it healthy</div>
+  <h2><span class="num">6</span>The config doctor &amp; utilities</h2>
+  <hr class="rule">
+  <p>Press <kbd>c</kbd> (or run <code>spookiui doctor</code>) for a health check. It reports
+  invalid settings, unknown or misspelled options, options set more than once (dead lines),
+  settings that merely repeat a default, and keybind triggers bound twice or shadowing a
+  Ghostty default. It exits non-zero on errors, so it drops neatly into a dotfiles pre-commit hook.</p>
+  <div class="term"><div class="bar"><span class="dot" style="background:#ff5f56"></span><span class="dot" style="background:#ffbd2e"></span><span class="dot" style="background:#27c93f"></span><span class="t">spookiui doctor</span></div>
+<pre><span class="cbar"> config check · 1 error(s), 3 warning(s)                                        </span>
+ <span class="rd">✗ invalid config: bogus-option: unknown field</span>
+ <span class="ye">! unknown option `bogus-option` — not recognised by your Ghostty</span>
+ <span class="ye">! `font-size` is set 2× — only the last takes effect; earlier ones are dead</span>
+ <span class="ye">! keybind trigger `super+k` is bound 2× — the later shadows the earlier</span>
+ <span class="dim">· `cursor-style` is set to its default — redundant, can be removed</span>
+<span class="cbar"> ↑↓ scroll · any other key to close                                            </span></pre></div>
+  <h3>Utils</h3>
+  <p>Press <kbd>v</kbd> for one-shot maintenance actions (such as <b>Fix SSH</b>) that solve
+  common Ghostty papercuts without hunting through options.</p>
+</section>
+
+<!-- ============================ 7. RELOAD + CLI ============================ -->
+<section class="section">
+  <div class="kicker">Under the hood &amp; scripting</div>
+  <h2><span class="num">7</span>Live reload &amp; the CLI</h2>
+  <hr class="rule">
+
+  <h3>How the live reload fires</h3>
+  <table>
+    <tr><th>Platform</th><th>Mechanism</th><th>Needs</th></tr>
+    <tr><td class="k">macOS</td><td>Clicks Ghostty's <em>Reload Configuration</em> menu item via AppleScript</td><td>Accessibility permission for your terminal</td></tr>
+    <tr><td class="k">Linux</td><td>Sends <code>SIGUSR2</code> to the running Ghostty process</td><td><code>pgrep</code> + a running Ghostty</td></tr>
+    <tr><td class="k">Other</td><td>Writes &amp; validates only</td><td>Trigger your own reload keybind</td></tr>
+  </table>
+  <p>If a reload can't fire, your change is still written and validated safely — SpookiUI just
+  tells you to reload manually.</p>
+
+  <h3>Scriptable CLI</h3>
+  <p>Everything the TUI does is available non-interactively — handy for dotfiles and scripts.</p>
+  <table>
+    <tr><th>Command</th><th>Purpose</th></tr>
+    <tr><td class="k"><code>spookiui list [category]</code></td><td>List options (* = changed from default)</td></tr>
+    <tr><td class="k"><code>spookiui get &lt;key&gt;</code></td><td>Print an option's current value</td></tr>
+    <tr><td class="k"><code>spookiui set &lt;key&gt; &lt;value&gt;…</code></td><td>Set an option (validates, writes, reloads)</td></tr>
+    <tr><td class="k"><code>spookiui doc &lt;key&gt;</code></td><td>Show an option's documentation &amp; choices</td></tr>
+    <tr><td class="k"><code>spookiui doctor</code></td><td>Health-check the config</td></tr>
+    <tr><td class="k"><code>spookiui profile save|load|list|toggle</code></td><td>Manage named config snapshots</td></tr>
+    <tr><td class="k"><code>spookiui themes</code> · <code>fonts</code></td><td>List installed themes / monospace fonts</td></tr>
+    <tr><td class="k"><code>spookiui reset --yes</code></td><td>Restore Ghostty's defaults (backup kept)</td></tr>
+    <tr><td class="k"><code>spookiui version</code> · <code>update</code></td><td>Check for / apply a newer release</td></tr>
+    <tr><td class="k"><code>spookiui validate</code> · <code>reload</code> · <code>path</code></td><td>Validate · reload · print config path</td></tr>
+  </table>
+  <div class="note"><b>Staying current.</b> On startup SpookiUI quietly checks GitHub for a newer
+  release and shows an <span style="color:var(--accent-ink)">↑ UPDATE</span> badge if one exists.
+  Update in place with <kbd>U</kbd> or <code>spookiui update</code> (or <code>brew upgrade</code>
+  for Homebrew installs). Set <code>SPOOKIUI_NO_UPDATE_CHECK=1</code> to disable the check.</div>
+</section>
+
+<!-- ============================ APPENDIX ============================ -->
+<section class="section">
+  <div class="kicker">Reference</div>
+  <h2><span class="num">8</span>Keyboard reference</h2>
+  <hr class="rule">
+  <div class="grid2">
+    <table>
+      <tr><th>Navigate</th><th></th></tr>
+      <tr><td class="k"><kbd>↑</kbd><kbd>↓</kbd> <kbd>j</kbd><kbd>k</kbd></td><td>move</td></tr>
+      <tr><td class="k"><kbd>Tab</kbd></td><td>switch pane</td></tr>
+      <tr><td class="k"><kbd>→</kbd><kbd>Enter</kbd></td><td>open / edit</td></tr>
+      <tr><td class="k"><kbd>←</kbd></td><td>back</td></tr>
+      <tr><td class="k"><kbd>/</kbd></td><td>search</td></tr>
+      <tr><td class="k"><kbd>u</kbd></td><td>reset option to default</td></tr>
+    </table>
+    <table>
+      <tr><th>Session</th><th></th></tr>
+      <tr><td class="k"><kbd>a</kbd></td><td>auto-apply on/off</td></tr>
+      <tr><td class="k"><kbd>s</kbd> · <kbd>r</kbd></td><td>save · reload</td></tr>
+      <tr><td class="k"><kbd>R</kbd> · <kbd>X</kbd></td><td>revert session · restore defaults</td></tr>
+      <tr><td class="k"><kbd>p</kbd> · <kbd>c</kbd> · <kbd>v</kbd></td><td>profiles · check · utils</td></tr>
+      <tr><td class="k"><kbd>d</kbd> · <kbd>U</kbd></td><td>show changes · update</td></tr>
+      <tr><td class="k"><kbd>?</kbd> · <kbd>q</kbd></td><td>help · quit</td></tr>
+    </table>
+  </div>
+  <div style="margin-top:26px; color:var(--faint); font-size:9pt; text-align:center">
+    SpookiUI is free software (MIT). &nbsp;·&nbsp;
+    github.com/mattj85/SpookiUI &nbsp;·&nbsp; Made for Ghostty 👻
+  </div>
+</section>
+
+</body>
+</html>

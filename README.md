@@ -278,9 +278,18 @@ Current treats:
 - **Jumper** — a hero hops beneath scrolling question-blocks (a nostalgic nod to
   side-scrolling platformers)
 
+Seasonal packs:
+
+- **Ghosts** _(Halloween)_ — friendly cartoon ghosts drift by, bobbing and fading
+- **Spooky Eyes** _(Halloween)_ — pairs of glowing eyes blink open in the dark
+- **Cobwebs** _(Halloween)_ — faint spider webs shimmer across the corners
+- **Snow** _(Winter)_ — soft snowflakes drift down across a few depth layers
+
 The game-inspired treats (Chomper / Barrels / Jumper) are drawn from plain
 shapes only — they evoke the vibe of those classics without using any game
-artwork, in the same "homage" spirit as the Pipes and Mystify treats.
+artwork, in the same "homage" spirit as the Pipes and Mystify treats. SpookiUI
+gently points out the pack that fits the season (e.g. the Halloween treats in
+October) in the treats list and overlay — nothing is auto-enabled.
 
 They're designed to stay out of your way:
 

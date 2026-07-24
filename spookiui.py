@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.10.2"
+__version__ = "1.11.0"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -672,6 +672,8 @@ class ConfigFile:
     KEY_RE = re.compile(r"^(\s*)([a-z0-9][a-z0-9-]*)(\s*=\s*)(.*?)(\s*)$")
     MANAGED_HEADER = "# ─────────── added by SpookiUI ───────────"
     LEGACY_HEADERS = ("# ─────────── added by GhostlyConfig ───────────",)
+    # SpookiUI's own commented-out bookkeeping markers (see unset/set_scalar).
+    NOISE_RE = re.compile(r"#\s*\((removed|superseded)\)\s*$")
 
     def __init__(self, path: str):
         self.path = path
@@ -684,6 +686,25 @@ class ConfigFile:
                 self.lines = fh.read().split("\n")
         else:
             self.lines = []
+        self._prune_managed_noise()
+
+    def _managed_start(self) -> int:
+        """Index of the first line inside the managed section (everything SpookiUI
+        appends), or len(lines) if there's no managed header yet."""
+        headers = (self.MANAGED_HEADER, *self.LEGACY_HEADERS)
+        for i, line in enumerate(self.lines):
+            if line in headers:
+                return i + 1
+        return len(self.lines)
+
+    def _prune_managed_noise(self) -> None:
+        """Drop SpookiUI's own commented-out bookkeeping lines (`# (removed)` /
+        `# (superseded)`) from the managed section, where they otherwise pile up
+        as a treat is toggled on and off. Lines outside the managed section are
+        left untouched so any history in your own config is preserved."""
+        start = self._managed_start()
+        self.lines = [ln for i, ln in enumerate(self.lines)
+                      if not (i >= start and self.NOISE_RE.search(ln))]
 
     def _key_at(self, i: int) -> tuple[str, str] | None:
         line = self.lines[i]
@@ -755,8 +776,15 @@ class ConfigFile:
             self._append_managed(new_lines)
 
     def unset(self, name: str) -> None:
-        for i in self.indices_of(name):
-            self.lines[i] = "# " + self.lines[i] + "  # (removed)"
+        # Delete our own managed lines outright (they'd otherwise accumulate as
+        # `# (removed)` noise every time e.g. a treat is toggled); comment out
+        # lines in your own config so that history is preserved.
+        start = self._managed_start()
+        for i in sorted(self.indices_of(name), reverse=True):
+            if i >= start:
+                del self.lines[i]
+            else:
+                self.lines[i] = "# " + self.lines[i] + "  # (removed)"
 
     def _append_managed(self, new_lines: list[str]) -> None:
         headers = (self.MANAGED_HEADER, *self.LEGACY_HEADERS)
@@ -2061,6 +2089,176 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 """
 
 
+_GLSL_GHOSTS = """\
+// SpookiUI treat: Ghosts.
+// Friendly cartoon ghosts drift across the screen, bobbing and fading in/out at
+// the edges. Original SpookiUI shader; drawn over dark background pixels only.
+
+float gh(float n) { return fract(sin(n * 12.9898) * 43758.5453123); }
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+
+    vec3 acc = vec3(0.0);
+    const int N = 4;
+    for (int i = 0; i < N; i++) {
+        float fi = float(i);
+        float speed = 0.03 + 0.05 * gh(fi + 1.3);
+        float x = fract(gh(fi * 2.1) + iTime * speed);
+        float y = 0.2 + 0.6 * gh(fi * 3.7) + 0.04 * sin(iTime * (0.9 + 0.3 * fi) + fi);
+        float r = 0.06 + 0.025 * gh(fi * 5.5);
+
+        // ghost-local, aspect-corrected. uv.y grows downward, so p.y < 0 is up.
+        vec2 p = vec2((uv.x - x) * aspect, uv.y - y);
+        float dome = (p.y < 0.0) ? length(p) : abs(p.x);      // rounded top, straight sides
+        float hem = 1.05 * r + 0.10 * r * sin(p.x / r * 8.0 + iTime * 3.0);  // wavy skirt
+        float shape = step(dome, r) * step(p.y, hem);
+        float eyes = smoothstep(0.28 * r, 0.14 * r, length(p - vec2(-0.34 * r, -0.18 * r)))
+                   + smoothstep(0.28 * r, 0.14 * r, length(p - vec2( 0.34 * r, -0.18 * r)));
+        float body = clamp(shape - eyes, 0.0, 1.0);
+        float fade = smoothstep(0.0, 0.08, x) * smoothstep(1.0, 0.9, x);  // hide the wrap
+        acc += vec3(0.72, 0.80, 1.0) * body * fade;
+    }
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.14, lum);
+
+    vec3 res = term.rgb + acc * 0.5 * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+_GLSL_SPOOKY_EYES = """\
+// SpookiUI treat: Spooky Eyes.
+// Pairs of glowing eyes blink open in the dark, linger, then fade and reappear
+// somewhere new. Original SpookiUI shader; drawn over dark background pixels.
+
+float se(vec2 p) {
+    p = fract(p * vec2(127.1, 311.7));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+
+    vec3 acc = vec3(0.0);
+    const int N = 5;
+    for (int i = 0; i < N; i++) {
+        float fi = float(i);
+        float period = 5.0 + 3.0 * se(vec2(fi, 1.0));
+        float tp = iTime / period + fi * 0.37;
+        float k = floor(tp);
+        float f = fract(tp);
+        vec2 pos = vec2(0.12 + 0.76 * se(vec2(k, fi + 3.0)),
+                        0.15 + 0.70 * se(vec2(k + 7.0, fi)));
+        float life = smoothstep(0.0, 0.12, f) * smoothstep(1.0, 0.72, f);
+        float blinkAmt = smoothstep(0.44, 0.5, f) * smoothstep(0.56, 0.5, f);
+        float rx = 0.017;
+        float ry = 0.015 * mix(1.0, 0.12, blinkAmt);           // squash shut on a blink
+        vec3 col = mix(vec3(1.0, 0.72, 0.15), vec3(0.45, 1.0, 0.5),
+                       step(0.5, se(vec2(fi, 9.0))));          // amber or eerie green
+        vec2 d1 = vec2((uv.x - (pos.x - 0.022)) * aspect, uv.y - pos.y);
+        vec2 d2 = vec2((uv.x - (pos.x + 0.022)) * aspect, uv.y - pos.y);
+        float e1 = smoothstep(1.0, 0.25, length(d1 / vec2(rx, ry)));
+        float e2 = smoothstep(1.0, 0.25, length(d2 / vec2(rx, ry)));
+        acc += col * (e1 + e2) * life;
+    }
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.14, lum);
+
+    vec3 res = term.rgb + acc * 0.7 * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+_GLSL_COBWEBS = """\
+// SpookiUI treat: Cobwebs.
+// Faint spider webs strung across two corners, with a gentle shimmer — mostly
+// still. Original SpookiUI shader; drawn over dark background pixels only.
+
+float webAt(vec2 uv, vec2 corner, float aspect, float t) {
+    vec2 p = uv - corner;
+    p.x *= aspect;
+    p = abs(p);
+    float r = length(p);
+    float maxR = 0.5;
+    if (r > maxR) return 0.0;
+    float a = atan(p.y, p.x);                            // 0..pi/2
+    float spoke = abs(fract(a / 1.5708 * 6.0) - 0.5);    // 6 radial threads
+    float spokeL = smoothstep(0.055, 0.0, spoke);
+    float ring = abs(fract(r * 8.0) - 0.5);              // concentric threads
+    float ringL = smoothstep(0.06, 0.0, ring) * step(0.04, r);
+    float web = max(spokeL, ringL);
+    float fade = smoothstep(maxR, 0.05, r);              // denser toward the corner
+    float shimmer = 0.8 + 0.2 * sin(t * 1.2 + r * 22.0);
+    return web * fade * shimmer;
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+
+    float w = webAt(uv, vec2(0.0, 0.0), aspect, iTime)     // top-left
+            + webAt(uv, vec2(1.0, 1.0), aspect, iTime);    // bottom-right
+    vec3 web = vec3(0.82, 0.86, 0.95) * clamp(w, 0.0, 1.0);
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.14, lum);
+
+    vec3 res = term.rgb + web * 0.45 * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+_GLSL_SNOW = """\
+// SpookiUI treat: Snow.
+// Soft snowflakes drift down and sway across a few depth layers. Original
+// SpookiUI shader; drawn over dark background pixels only.
+
+float sn(vec2 p) {
+    p = fract(p * vec2(127.1, 311.7));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+float snowLayer(vec2 uv, float aspect, float t, float scale, float speed, float sz) {
+    vec2 g = vec2(uv.x * aspect, uv.y) * scale;
+    g.y -= t * speed;                       // fall downward (uv.y grows down)
+    g.x += 0.4 * sin(t * 0.5 + g.y * 0.6);  // gentle sway
+    vec2 cell = floor(g);
+    vec2 f = fract(g) - 0.5;
+    float r = sn(cell);
+    vec2 off = 0.3 * vec2(sin(r * 30.0), cos(r * 21.0));
+    float d = length(f - off);
+    return smoothstep(sz, 0.0, d) * step(0.45, r);   // ~55% of cells carry a flake
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+
+    float s = snowLayer(uv, aspect, iTime, 9.0,  0.35, 0.13) * 0.7
+            + snowLayer(uv, aspect, iTime, 15.0, 0.6,  0.10) * 0.85
+            + snowLayer(uv, aspect, iTime, 23.0, 0.9,  0.08);
+    vec3 snow = vec3(0.95, 0.97, 1.0) * clamp(s, 0.0, 1.0);
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.14, lum);
+
+    vec3 res = term.rgb + snow * 0.6 * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+
 @dataclass
 class Treat:
     slug: str          # file/CLI name, e.g. "matrix-rain"
@@ -2068,6 +2266,7 @@ class Treat:
     desc: str          # one-line summary
     glsl: str          # the full fragment-shader source
     note: str = ""     # extra guidance shown in the detail pane
+    season: str = ""   # "" (evergreen) or a SEASONS key, e.g. "halloween"
 
 
 TREATS: list[Treat] = [
@@ -2111,9 +2310,56 @@ TREATS: list[Treat] = [
           _GLSL_JUMPER,
           "A nostalgic nod to side-scrolling platformers — plain shapes, no game "
           "artwork."),
+    Treat("ghosts", "Ghosts",
+          "Friendly cartoon ghosts drift by, bobbing and fading.",
+          _GLSL_GHOSTS,
+          "Part of the Halloween pack. Ghosts fade in and out at the edges.",
+          season="halloween"),
+    Treat("spooky-eyes", "Spooky Eyes",
+          "Pairs of glowing eyes blink open in the dark, then move on.",
+          _GLSL_SPOOKY_EYES,
+          "Part of the Halloween pack. Amber and eerie-green eyes that blink.",
+          season="halloween"),
+    Treat("cobwebs", "Cobwebs",
+          "Faint spider webs strung across the corners, softly shimmering.",
+          _GLSL_COBWEBS,
+          "Part of the Halloween pack. Nearly still — a subtle framing effect.",
+          season="halloween"),
+    Treat("snow", "Snow",
+          "Soft snowflakes drift down and sway in a few depth layers.",
+          _GLSL_SNOW,
+          "Part of the Winter pack. A calm, wintery backdrop.",
+          season="winter"),
 ]
 
 TREAT_BY_SLUG: dict[str, Treat] = {t.slug: t for t in TREATS}
+
+# Seasonal packs: a treat's `season` key maps to a display name here. `current_season`
+# gently suggests the pack that fits today's date — nothing is auto-enabled.
+SEASONS = {"halloween": "Halloween", "winter": "Winter"}
+
+
+def current_season() -> str:
+    """A loosely 'in season' key for today, or '' if nothing special is on.
+    October → halloween; December–February → winter."""
+    m = time.localtime().tm_mon
+    if m == 10:
+        return "halloween"
+    if m == 12 or m <= 2:
+        return "winter"
+    return ""
+
+
+def seasonal_treats(season: str) -> list[Treat]:
+    """Treats belonging to a season key, in registry order ([] for '')."""
+    return [t for t in TREATS if season and t.season == season]
+
+
+def season_hint() -> str:
+    """A one-line 'in season' suggestion for today, or '' if none applies."""
+    s = current_season()
+    names = ", ".join(t.name for t in seasonal_treats(s))
+    return f"In season ({SEASONS[s]}): {names}" if names else ""
 
 
 def shaders_dir() -> str:
@@ -4102,9 +4348,14 @@ class App:
             self.safe(0, 0,
                       " treats · fun background shaders ".ljust(w),
                       c.color_pair(1) | c.A_BOLD)
+            hint = season_hint()
+            if hint:
+                self.safe(1, 2, ("🎃 " if current_season() == "halloween"
+                                 else "❄ ") + hint if self.icons else hint,
+                          c.color_pair(8) | c.A_BOLD)
             active = set(enabled_treat_slugs(self.sess))
             list_w = 24
-            top = 2
+            top = 3 if hint else 2
             for i, t in enumerate(TREATS):
                 y = top + i
                 if y >= h - 3:
@@ -4175,7 +4426,13 @@ class App:
                 state = "ENABLED" if t.slug in active else "off"
                 self.safe(y, dx, "state: " + state,
                           (c.color_pair(6) if t.slug in active else c.color_pair(4))
-                          | c.A_BOLD); y += 2
+                          | c.A_BOLD); y += 1
+                if t.season:
+                    in_season = t.season == current_season()
+                    self.safe(y, dx, f"pack: {SEASONS[t.season]}"
+                              + ("  · in season!" if in_season else ""),
+                              c.color_pair(8) | (c.A_BOLD if in_season else 0))
+                y += 1
                 for para in (t.desc, t.note):
                     if not para:
                         continue
@@ -4616,9 +4873,13 @@ def cli_treats(sess: Session, args) -> int:
         print(f"vibrancy: {int(round(get_treat_vibrancy() * 100))}%")
         if SUPPORTS_SHADER_FOCUS:
             print(f"dim unfocused: {'on' if get_dim_unfocused() else 'off'}")
+        hint = season_hint()
+        if hint:
+            print(hint)
         for t in TREATS:
             box = "[x]" if t.slug in active else "[ ]"
-            print(f"{box} {t.slug:12} {t.desc}")
+            tag = f" [{SEASONS[t.season]}]" if t.season else ""
+            print(f"{box} {t.slug:12} {t.desc}{tag}")
         return 0
 
     slugs = list(getattr(args, "name", None) or [])

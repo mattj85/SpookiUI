@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.10.1"
+__version__ = "1.10.2"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -1267,29 +1267,57 @@ def profiles_dir() -> str:
 
 
 def treats_state_path() -> str:
-    """Small global-preference file for treats (currently just vibrancy). Kept
+    """Small global-preference file for treats (vibrancy, dim-unfocused). Kept
     outside Ghostty's config so it's a preference, not part of any saved profile."""
     return os.path.join(spookiui_data_dir(), "treats.json")
+
+
+def _read_treats_state() -> dict:
+    """The treats preference dict, or {} if missing/corrupt (always safe)."""
+    try:
+        with open(treats_state_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _write_treats_state(**changes) -> None:
+    """Merge `changes` into the treats preference file (read-modify-write so one
+    preference never clobbers another)."""
+    state = _read_treats_state()
+    state.update(changes)
+    os.makedirs(spookiui_data_dir(), exist_ok=True)
+    with open(treats_state_path(), "w", encoding="utf-8") as fh:
+        json.dump(state, fh)
 
 
 def get_treat_vibrancy() -> float:
     """How strongly the active treat's animation shows, in [0.0, 1.0]. 1.0 (the
     default) is the tuned look treats ship with; lower fades the effect toward
-    invisible. Tolerant of a missing/corrupt file — always returns a sane value."""
+    invisible."""
     try:
-        with open(treats_state_path(), encoding="utf-8") as fh:
-            v = float(json.load(fh).get("vibrancy", 1.0))
-    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        v = float(_read_treats_state().get("vibrancy", 1.0))
+    except (ValueError, TypeError):
         return 1.0
     return max(0.0, min(1.0, v))
 
 
 def set_treat_vibrancy_value(v: float) -> None:
     """Persist the treat vibrancy (clamped to [0.0, 1.0]) to the preference file."""
-    v = max(0.0, min(1.0, v))
-    os.makedirs(spookiui_data_dir(), exist_ok=True)
-    with open(treats_state_path(), "w", encoding="utf-8") as fh:
-        json.dump({"vibrancy": round(v, 2)}, fh)
+    _write_treats_state(vibrancy=round(max(0.0, min(1.0, v)), 2))
+
+
+def get_dim_unfocused() -> bool:
+    """Whether an unfocused Ghostty window is dimmed + desaturated to set it apart
+    from the focused one. Defaults to True (the behaviour treats have always had).
+    Only takes effect on Ghostty builds exposing `iFocus` (see SUPPORTS_SHADER_FOCUS)."""
+    return bool(_read_treats_state().get("dim_unfocused", True))
+
+
+def set_dim_unfocused_value(on: bool) -> None:
+    """Persist the dim-unfocused preference."""
+    _write_treats_state(dim_unfocused=bool(on))
 
 
 def icons_available(sess: "Session") -> bool:
@@ -1580,12 +1608,21 @@ def apply_ssh_fix() -> tuple[bool, str]:
 # `<ghostty-config-dir>/shaders/spookiui/<slug>.glsl`, and toggles for you.
 #
 # When Ghostty exposes the `iFocus` shader uniform (newer versions — see
-# SUPPORTS_SHADER_FOCUS), every treat also uses it to *set the unfocused window
-# apart*: an unfocused terminal hides the treat and renders dimmed + desaturated
-# (via the shared `spooki_out` helper in `compose_shader`). Combined with
-# `custom-shader-animation = true`, this means only the focused window animates,
-# and every other window visibly reads as "inactive". On older Ghostty without
+# SUPPORTS_SHADER_FOCUS) and the dim-unfocused preference is on (the default, see
+# `get_dim_unfocused`), every treat uses it to *set the unfocused window apart*: an
+# unfocused terminal hides the treat and renders dimmed + desaturated (via the
+# shared `spooki_out` helper in `compose_shader`, gated by the baked `SPOOKI_DIM`
+# const). This is a toggle: turning it off shows unfocused windows at full
+# brightness. It even works with no treat active — a tiny no-op `_dim` shader
+# (`write_dim_shader`) carries the dimming on its own. On older Ghostty without
 # `iFocus` the treats fall back to their plain look and nothing changes.
+#
+# On those same newer versions the treats also drive their animation off a
+# per-focus clock (`iTime - iTimeFocus`, wired in by `compose_shader`) rather than
+# raw `iTime`. Because only the focused surface animates, raw `iTime` jumps ahead
+# while a window is unfocused and the animation lurches forward on refocus; the
+# per-focus clock restarts at 0 each time a window gains focus, so every window
+# animates from the same point at the same rate.
 #
 # Every treat composites *additively* over the terminal and only brightens the
 # darkest background pixels (a tight luminance mask), so the effect fades into the
@@ -2105,11 +2142,12 @@ _SHADER_TAIL_NEW = "fragColor = spooki_out(res, term);"
 # an inactive window is easy to tell apart from the focused one. Prepended before
 # the treat body so `spooki_out` is declared before `mainImage` uses it.
 _FOCUS_EPILOGUE = """\
-// added by SpookiUI: when this window is unfocused, hide the treat and show the
-// terminal dimmed + desaturated so the inactive window is set apart from the
-// focused one. `iFocus` is 1.0 while focused, 0.0 while unfocused.
+// added by SpookiUI: when this window is unfocused and dimming is enabled
+// (SPOOKI_DIM, baked in), hide the treat and render the terminal dimmed +
+// desaturated so the inactive window is set apart from the focused one.
+// `iFocus` is 1.0 while focused, 0.0 while unfocused.
 vec4 spooki_out(vec3 res, vec4 term) {
-    if (iFocus < 0.5) {
+    if (SPOOKI_DIM > 0.5 && iFocus < 0.5) {
         float g = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));  // luminance
         vec3 inactive = mix(term.rgb, vec3(g), 0.55) * 0.55;    // desaturate, dim
         return vec4(inactive, term.a);
@@ -2131,25 +2169,80 @@ vec4 spooki_out(vec3 res, vec4 term) {
 """
 
 
-def compose_shader(t: Treat, vibrancy: float = 1.0) -> str:
+def compose_shader(t: Treat, vibrancy: float = 1.0, dim: bool = True) -> str:
     """The full GLSL written to disk: the treat's effect wired through the shared
     `spooki_out` helper, scaled by `vibrancy` (baked in as a GLSL const, since
     Ghostty custom shaders can't take user uniforms). When this Ghostty exposes
-    `iFocus`, an unfocused window hides the treat and is dimmed + desaturated;
-    otherwise the plain passthrough is used so treats work on older Ghostty."""
+    `iFocus` and `dim` is set, an unfocused window hides the treat and is dimmed +
+    desaturated; otherwise the plain passthrough is used so treats work on older
+    Ghostty."""
     epilogue = _FOCUS_EPILOGUE if SUPPORTS_SHADER_FOCUS else _PLAIN_EPILOGUE
-    header = f"const float SPOOKI_VIBRANCY = {max(0.0, min(1.0, vibrancy)):.2f};\n\n"
-    return header + epilogue + t.glsl.replace(_SHADER_TAIL, _SHADER_TAIL_NEW)
+    body = t.glsl.replace(_SHADER_TAIL, _SHADER_TAIL_NEW)
+    header = (f"const float SPOOKI_VIBRANCY = {max(0.0, min(1.0, vibrancy)):.2f};\n"
+              f"const float SPOOKI_DIM = {1.0 if dim else 0.0:.1f};\n")
+    if SUPPORTS_SHADER_FOCUS:
+        # `custom-shader-animation = true` only animates the focused surface, and
+        # `iTime` counts from the first rendered frame — so when a window regains
+        # focus its clock has jumped far ahead and the animation lurches forward
+        # (looks "much faster" in the just-focused window than the others). Drive
+        # every treat off a per-focus clock instead: `iTime - iTimeFocus` restarts
+        # at 0 each time a surface gains focus, so all windows animate from the
+        # same point at the same rate with no jump. (Ghostty documents exactly this
+        # use for `iTimeFocus`.) Only bare `iTime` is used in the treat bodies, so a
+        # word-boundary remap is safe.
+        header = "#define SPOOKI_TIME (iTime - iTimeFocus)\n" + header
+        body = re.sub(r"\biTime\b", "SPOOKI_TIME", body)
+    return header + "\n" + epilogue + body
 
 
-def write_treat_shader(t: Treat, vibrancy: float | None = None) -> str:
+def write_treat_shader(t: Treat, vibrancy: float | None = None,
+                       dim: bool | None = None) -> str:
     """Write a treat's GLSL to disk (idempotent), returning the absolute path.
-    `vibrancy` defaults to the saved global preference."""
+    `vibrancy` and `dim` default to the saved global preferences."""
     if vibrancy is None:
         vibrancy = get_treat_vibrancy()
+    if dim is None:
+        dim = get_dim_unfocused()
     path = treat_shader_path(t)
     os.makedirs(shaders_dir(), exist_ok=True)
-    source = compose_shader(t, vibrancy)
+    source = compose_shader(t, vibrancy, dim)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if fh.read() == source:
+                return path
+    except OSError:
+        pass
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(source)
+    return path
+
+
+# A minimal "shader" that adds no effect of its own — it exists only so the
+# dim-unfocused behaviour can run when no treat is active. Composed through the
+# same `spooki_out` helper: focused windows are an exact passthrough, unfocused
+# ones dim + desaturate (when SPOOKI_DIM is baked on). Namespaced like a treat but
+# NOT registered in TREATS, so `enabled_treat_slugs` never counts it as a treat.
+_GLSL_DIM_ONLY = """\
+// SpookiUI: dim unfocused windows (no animation). Passthrough when focused.
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    vec3 res = term.rgb;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+_DIM_TREAT = Treat("_dim", "Dim unfocused", "", _GLSL_DIM_ONLY)
+
+
+def dim_shader_path() -> str:
+    return os.path.join(shaders_dir(), "_dim.glsl")
+
+
+def write_dim_shader() -> str:
+    """Write the dim-only shader to disk (idempotent), returning its path."""
+    os.makedirs(shaders_dir(), exist_ok=True)
+    source = compose_shader(_DIM_TREAT, vibrancy=1.0, dim=True)
+    path = dim_shader_path()
     try:
         with open(path, encoding="utf-8") as fh:
             if fh.read() == source:
@@ -2184,24 +2277,35 @@ def apply_treat_lines(sess: "Session", slugs) -> None:
     turn treats off). Writes the GLSL files (harmless — not config) and rewrites
     `custom-shader` + `custom-shader-animation`, preserving any `custom-shader`
     entries you added yourself. Does NOT validate/write/reload — callers do that
-    (rollback-safe)."""
+    (rollback-safe).
+
+    When no treat is active but the dim-unfocused preference is on (and this
+    Ghostty supports `iFocus`), a tiny no-animation `_dim` shader is installed so
+    unfocused windows still dim — the dim behaviour outlives any active treat."""
     chosen = next((s for s in slugs if s in TREAT_BY_SLUG), None)
-    want = [TREAT_BY_SLUG[chosen]] if chosen else []
-    for t in want:
-        write_treat_shader(t)
+    dim_only = (chosen is None and get_dim_unfocused() and SUPPORTS_SHADER_FOCUS)
+    ours: list[str] = []
+    if chosen:
+        write_treat_shader(TREAT_BY_SLUG[chosen])
+        ours.append(treat_shader_path(TREAT_BY_SLUG[chosen]))
+    elif dim_only:
+        write_dim_shader()
+        ours.append(dim_shader_path())
     foreign = [v for v in sess.cfg.get_values("custom-shader")
                if not _is_treat_path(v)]
-    new_list = foreign + [treat_shader_path(t) for t in want]
+    new_list = foreign + ours
     if new_list:
         sess.cfg.set_list("custom-shader", new_list)
     else:
         sess.cfg.unset("custom-shader")
-    if want:
+    if chosen or dim_only:
         # `true` animates only the focused/active window; unfocused ones pause. So
         # opening (and focusing) a new terminal freezes the treat in the others —
         # only one window animates at a time, which also keeps the GPU idle on the
         # windows you're not looking at. (`always` would animate every window at
         # once.) Combined with the single-treat rule, at most one shader ever runs.
+        # The dim-only shader uses it too: a focus change redraws the surface (so
+        # `iFocus` updates and dimming applies), and its no-op body is ~free.
         sess.cfg.set_scalar("custom-shader-animation", "true")
     elif not new_list:
         sess.cfg.unset("custom-shader-animation")
@@ -2251,6 +2355,23 @@ def set_treat_vibrancy(sess: "Session", percent: int) -> tuple[bool, str]:
         return True, (f"vibrancy set to {percent}% + reloaded live" if r_ok
                       else f"vibrancy set to {percent}% (reload: {m})")
     return True, f"vibrancy set to {percent}%"
+
+
+def set_dim_unfocused(sess: "Session", on: bool) -> tuple[bool, str]:
+    """Turn dimming of unfocused windows on/off. Persists the preference, then
+    re-applies treats through the normal validate → write → reload → rollback path
+    so the change takes effect immediately: with a treat active its shader is
+    re-baked; with none active the tiny `_dim` shader is installed (on) or removed
+    (off)."""
+    if not SUPPORTS_SHADER_FOCUS:
+        return False, ("this Ghostty build doesn't expose the focus uniform "
+                       "needed to dim unfocused windows")
+    set_dim_unfocused_value(on)
+    ok, m = set_treats(sess, enabled_treat_slugs(sess))
+    verb = "on" if on else "off"
+    if not ok:
+        return False, m
+    return True, f"dim unfocused windows: {verb}"
 
 
 _HEX_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
@@ -3934,7 +4055,11 @@ class App:
         self.safe(y, x, status[:width],
                   c.color_pair(6) if active else c.color_pair(4)); y += 1
         vib = int(round(get_treat_vibrancy() * 100))
-        self.safe(y, x, f"vibrancy: {vib}%"[:width], c.color_pair(4))
+        self.safe(y, x, f"vibrancy: {vib}%"[:width], c.color_pair(4)); y += 1
+        if SUPPORTS_SHADER_FOCUS:
+            self.safe(y, x,
+                      f"dim unfocused: {'on' if get_dim_unfocused() else 'off'}"[:width],
+                      c.color_pair(4))
 
     def _commit_treats(self, slugs):
         """Toggle treats live if auto-apply, else stage. Mirrors _commit_list:
@@ -3964,10 +4089,12 @@ class App:
         sel = 0
         note = ""
         note_kind = "info"
-        # The list is the treats followed by one "Vibrancy" menu row, so the
-        # slider is a discoverable, navigable option — not just a hidden key.
+        # The list is the treats followed by menu rows: "Vibrancy" (always) and
+        # "Dim unfocused" (only where Ghostty exposes the focus uniform), so both
+        # are discoverable, navigable options — not just hidden keys.
         vib_row = len(TREATS)
-        nrows = len(TREATS) + 1
+        dim_row = len(TREATS) + 1 if SUPPORTS_SHADER_FOCUS else -1
+        nrows = len(TREATS) + (2 if SUPPORTS_SHADER_FOCUS else 1)
         while True:
             self.scr.erase()
             h, w = self.dims()
@@ -3997,6 +4124,15 @@ class App:
                 self.safe(vy, 2,
                           ("→ " if sel == vib_row else "  ") + f"Vibrancy  {vib}%",
                           vattr)
+            # Dim-unfocused toggle row (focus-capable Ghostty only).
+            if dim_row >= 0 and vy + 1 < h - 3:
+                dim_on = get_dim_unfocused()
+                dattr = (c.color_pair(3) | c.A_BOLD if sel == dim_row
+                         else c.color_pair(6))
+                self.safe(vy + 1, 2,
+                          ("→ " if sel == dim_row else "  ")
+                          + f"Dim unfocused  {'on' if dim_on else 'off'}",
+                          dattr)
             for y in range(top, h - 3):
                 self.safe(y, list_w, "│", c.color_pair(4))
 
@@ -4015,6 +4151,24 @@ class App:
                         self.safe(y, dx, seg[:dw], c.color_pair(4)); y += 1
                     y += 1
                 self.safe(y, dx, "Space/Enter → adjust", c.color_pair(2)); y += 1
+            elif sel == dim_row:
+                dim_on = get_dim_unfocused()
+                self.safe(y, dx, "Dim unfocused windows",
+                          c.color_pair(10) | c.A_BOLD); y += 1
+                self.safe(y, dx, "on" if dim_on else "off",
+                          (c.color_pair(6) if dim_on else c.color_pair(4))
+                          | c.A_BOLD); y += 2
+                for para in ("When another Ghostty window has focus, this window "
+                             "dims + desaturates so the active one stands out.",
+                             "Works even with no treat/animation running — a tiny "
+                             "no-op shader handles it.",
+                             "Applies to every window; persists across sessions."):
+                    for seg in self._wrap(para, dw):
+                        if y >= h - 3:
+                            break
+                        self.safe(y, dx, seg[:dw], c.color_pair(4)); y += 1
+                    y += 1
+                self.safe(y, dx, "Space/Enter → toggle", c.color_pair(2)); y += 1
             else:
                 t = TREATS[sel]
                 self.safe(y, dx, t.name, c.color_pair(10) | c.A_BOLD); y += 1
@@ -4058,6 +4212,23 @@ class App:
                 if sel == vib_row:
                     note = self._treat_vibrancy_slider()
                     note_kind = "ok"
+                    continue
+                if sel == dim_row:
+                    new = not get_dim_unfocused()
+                    set_dim_unfocused_value(new)
+                    # Re-apply through the staging-aware commit so it honours
+                    # auto-apply: with a treat on its shader re-bakes, with none on
+                    # the tiny _dim shader is installed (new) or removed (off).
+                    ok, errs = self._commit_treats(enabled_treat_slugs(self.sess))
+                    verb = "on" if new else "off"
+                    if ok:
+                        tag = "live" if self.sess.auto_apply else "staged"
+                        note, note_kind = f"dim unfocused {verb} ({tag})", "ok"
+                        self._msg(note, "ok")
+                    else:
+                        set_dim_unfocused_value(not new)   # revert on failure
+                        note = "failed: " + (errs[0] if errs else "?")
+                        note_kind = "error"
                     continue
                 t = TREATS[sel]
                 active_now = enabled_treat_slugs(self.sess)
@@ -4443,12 +4614,28 @@ def cli_treats(sess: Session, args) -> int:
 
     if action == "list":
         print(f"vibrancy: {int(round(get_treat_vibrancy() * 100))}%")
+        if SUPPORTS_SHADER_FOCUS:
+            print(f"dim unfocused: {'on' if get_dim_unfocused() else 'off'}")
         for t in TREATS:
             box = "[x]" if t.slug in active else "[ ]"
             print(f"{box} {t.slug:12} {t.desc}")
         return 0
 
     slugs = list(getattr(args, "name", None) or [])
+
+    if action == "dim":
+        if not slugs:
+            print("on" if get_dim_unfocused() else "off")
+            return 0
+        val = slugs[0].strip().lower()
+        truthy = {"on", "true", "yes", "1", "enable", "enabled"}
+        falsy = {"off", "false", "no", "0", "disable", "disabled"}
+        if val not in truthy and val not in falsy:
+            print(f"dim expects on/off, got '{slugs[0]}'", file=sys.stderr)
+            return 2
+        ok, m = set_dim_unfocused(sess, val in truthy)
+        print(m, file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 1
 
     if action == "vibrancy":
         if not slugs:
@@ -4572,12 +4759,13 @@ def build_parser() -> argparse.ArgumentParser:
         "treats",
         help="toggle fun background shaders (stars, matrix, pipes); all off by default")
     sp.add_argument("action", nargs="?", default="list",
-                    choices=["list", "enable", "disable", "only", "clear", "vibrancy"],
+                    choices=["list", "enable", "disable", "only", "clear",
+                             "vibrancy", "dim"],
                     help="list (default), enable/disable/only <name…>, clear, "
-                         "or vibrancy [0-100]")
+                         "vibrancy [0-100], or dim [on|off]")
     sp.add_argument("name", nargs="*",
-                    help="treat slug(s) for enable/disable/only, or a 0–100 "
-                         "percentage for vibrancy")
+                    help="treat slug(s) for enable/disable/only, a 0–100 "
+                         "percentage for vibrancy, or on/off for dim")
     sp.set_defaults(func=cli_treats)
     return p
 

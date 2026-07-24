@@ -304,16 +304,22 @@ They're designed to stay out of your way:
   **Vibrancy** row in the treats overlay to open the slider (or press `v`), or use
   `treats vibrancy <0-100>` from the CLI. It's a global preference, so it applies
   to whichever treat you turn on.
+- **Dim unfocused windows** — when another Ghostty window has focus, the inactive
+  ones dim + desaturate so the active window stands out. It works even with no
+  treat running (a tiny no-op shader handles it), toggles from the **Dim
+  unfocused** row in the overlay or `treats dim on|off`, and persists across
+  sessions. Requires a Ghostty build that exposes the focus shader uniform.
 
 Toggle them in the TUI (`Space`/`Enter`, `v` for vibrancy), or from the CLI:
 
 ```bash
-./spookiui.py treats list                 # show treats, vibrancy, and which one is on
+./spookiui.py treats list                 # show treats, vibrancy, dim, and which one is on
 ./spookiui.py treats enable matrix-rain    # make this the active treat (replaces any other)
 ./spookiui.py treats disable pipes         # turn the active treat off
 ./spookiui.py treats only plasma           # same as enable — one treat at a time
 ./spookiui.py treats clear                 # turn the treat off
 ./spookiui.py treats vibrancy 60           # fade the animation to 60% (blank prints current)
+./spookiui.py treats dim off               # stop dimming unfocused windows (blank prints current)
 ```
 
 ## Scriptable CLI

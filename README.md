@@ -149,6 +149,7 @@ be applied without a restart at all; the UI flags these as *needs restart* /
 | `p` | **profiles** — save / load / delete named configs · `t` toggles light↔dark |
 | `c` | **config check** (doctor) — health-check for issues |
 | `v` | **utils** — one-shot fixes (e.g. **Fix SSH**) |
+| `t` | **treats** — fun animated background shaders (all off by default) |
 | `d` | show everything you've changed |
 | `?` | help · `q` quit |
 
@@ -247,6 +248,45 @@ Run it from the CLI too:
 ./spookiui.py fix-ssh --explain  # print the full what/why, then exit
 ```
 
+## Treats — fun background shaders
+
+The **🍬 Treats** category (press `t` anywhere, or find it in the left pane)
+bundles a handful of nostalgic, animated background shaders. Ghostty can run a
+ShaderToy-style GLSL shader behind the terminal grid; a treat is one SpookiUI
+writes for you into `<ghostty-config-dir>/shaders/spookiui/` and toggles on via
+`custom-shader`.
+
+Current treats:
+
+- **Matrix Rain** — falling green glyph columns, `cmatrix`-style
+- **Pipes** — a neon homage to the Win95 3D Pipes screensaver
+- **Mystify** — bouncing, colour-trailing polygons (the Windows Mystify saver)
+- **Plasma** — a rolling demoscene / After Dark plasma field
+- **Lava Lamp** — slow rising metaball blobs (a 70s lava lamp / Bubbles saver)
+
+They're designed to stay out of your way:
+
+- **All off by default** — nothing is enabled unless you ask.
+- **Text stays legible** — every treat composites *additively* through a tight
+  luminance mask, so only the darkest background pixels are tinted; your text,
+  cursor, and borders are left alone. Brightness is kept deliberately low.
+- **Light on resources** — SpookiUI sets `custom-shader-animation = true` (animate
+  on focus/activity) rather than `always`, so an idle, unfocused window isn't
+  burning the GPU, and each shader uses only small, fixed per-frame work.
+- **Non-destructive** — treats are namespaced under `shaders/spookiui/`, so any
+  `custom-shader` you added yourself is preserved, and toggling follows the same
+  validate → back up → write → reload → rollback discipline as every other edit.
+
+Toggle them in the TUI (`Space`/`Enter`), or from the CLI:
+
+```bash
+./spookiui.py treats list                 # show treats and which are on
+./spookiui.py treats enable matrix-rain    # turn one (or more) on
+./spookiui.py treats disable pipes         # turn one (or more) off
+./spookiui.py treats only plasma           # enable exactly these, disable the rest
+./spookiui.py treats clear                 # turn all treats off
+```
+
 ## Scriptable CLI
 
 Everything the TUI does is also available non-interactively:
@@ -268,6 +308,7 @@ Everything the TUI does is also available non-interactively:
 ./spookiui.py doctor               # health-check the config (duplicates, unknown keys, keybind clashes…)
 ./spookiui.py fix-ssh              # fix garbled SSH sessions (adds a TERM=xterm-256color ssh alias)
 ./spookiui.py fix-ssh --check      # report whether the SSH alias is present; change nothing
+./spookiui.py treats list          # fun background shaders (also: enable / disable / only / clear)
 ./spookiui.py reload               # trigger a live reload
 ./spookiui.py validate             # validate the current config
 ./spookiui.py themes               # list installed themes

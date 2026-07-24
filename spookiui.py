@@ -18,8 +18,8 @@ Every option Ghostty exposes is discovered dynamically from the binary itself
 Ghostty version you have installed — nothing is hard-coded.
 
 There is also a scriptable, non-interactive CLI: `get`, `set`, `list`, `doc`,
-`reset`, `version`, `update`, `profile`, `doctor`, `fix-ssh`, `reload`,
-`validate`, `themes`, `fonts`, `path`. Run `./spookiui.py --help`.
+`reset`, `version`, `update`, `profile`, `doctor`, `fix-ssh`, `treats`,
+`reload`, `validate`, `themes`, `fonts`, `path`. Run `./spookiui.py --help`.
 
 On startup SpookiUI checks GitHub for a newer release (cached for a day; set
 SPOOKIUI_NO_UPDATE_CHECK=1 to disable) and shows a badge if one is available.
@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -318,7 +318,7 @@ FORCE_LIST = {
     "font-variation-bold", "font-variation-italic", "font-variation-bold-italic",
     "font-codepoint-map", "keybind", "palette", "config-file",
     "config-default-files", "env", "clipboard-codepoint-map", "key-remap",
-    "command-palette-entry", "link",
+    "command-palette-entry", "link", "custom-shader",
 }
 
 COLOR_HINTS = (
@@ -473,6 +473,12 @@ CATEGORY_ORDER = [
 # (Enter/→) launches the Utils menu overlay.
 UTILS_CATEGORY = "⚙ Utils"
 
+# Another synthetic category: "Treats" are fun, purely-cosmetic animated
+# background shaders (a starfield, a Matrix rain, neon pipes) that SpookiUI
+# bundles and toggles via Ghostty's `custom-shader`. All default OFF. Opening
+# it (Enter/→) launches the Treats overlay. See the TREATS registry below.
+TREATS_CATEGORY = "🍬 Treats"
+
 # Nerd Font glyphs shown beside each root category when a Nerd Font is in use
 # (see icons_available()). Codepoints are FontAwesome-range nf-fa-* icons; if a
 # Nerd Font isn't the terminal font they'd render as tofu, so icons stay off.
@@ -491,6 +497,7 @@ CATEGORY_ICONS = {
     "Linux / GTK": "",          # linux
     "Advanced": "",             # cogs
     UTILS_CATEGORY: "",         # cog
+    TREATS_CATEGORY: "",       # magic wand
 }
 DEFAULT_CATEGORY_ICON = ""      # folder
 
@@ -1525,6 +1532,387 @@ def apply_ssh_fix() -> tuple[bool, str]:
                   f"(warning: {note}) — {reload_hint}")
 
 
+# ── Treats: fun background shaders ──────────────────────────────────────────
+#
+# Ghostty can run a "custom shader" behind the terminal grid: a ShaderToy-style
+# GLSL fragment shader (`void mainImage(out vec4, in vec2)`) with `iResolution`,
+# `iTime`, and `iChannel0` (the rendered terminal) available. `custom-shader` is
+# a list, so several can be layered; `custom-shader-animation = always` keeps
+# them moving. A "treat" is one of these shaders that SpookiUI bundles, writes
+# to `<ghostty-config-dir>/shaders/spookiui/<slug>.glsl`, and toggles for you.
+#
+# Every treat composites *additively* over the terminal and only brightens the
+# darkest background pixels (a tight luminance mask), so the effect fades into the
+# background and your text, cursor, and borders stay readable. Brightness and
+# iteration counts are deliberately kept low so treats are subtle and cheap to
+# render. All treats are OFF by default — nothing is enabled unless you ask.
+
+
+# All treats are original SpookiUI shaders written to the same convention: they
+# composite additively, gated by a tight luminance mask so only the darkest
+# background pixels are touched and your text always stays legible.
+_GLSL_MATRIX_RAIN = """\
+// SpookiUI treat: Matrix Rain.
+// Falling green glyph columns in the spirit of `cmatrix`. Drawn only over dark
+// background pixels so your text stays readable. Original SpookiUI shader.
+
+const float COLUMNS = 46.0;
+
+float rand(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+
+    float cw = iResolution.x / COLUMNS;          // column width (px)
+    float col = floor(fragCoord.x / cw);
+    float chH = cw * 1.5;                         // glyph cell height (px)
+    float rows = iResolution.y / chH;
+
+    // Each column's stream head sweeps top->bottom at its own speed/phase.
+    float speed = mix(0.12, 0.45, rand(vec2(col, 2.0)));
+    float seed = rand(vec2(col, 9.0));
+    float phase = fract(iTime * speed + seed);
+    float head = 1.0 - phase;                     // uv.y of the head
+    float trail = mix(0.25, 0.60, rand(vec2(col, 5.0)));
+    float d = head - uv.y;                         // >0 for the trailing tail
+    float body = (d >= 0.0 && d <= trail) ? (1.0 - d / trail) : 0.0;
+    body = pow(body, 1.4);
+
+    // Per-cell glyph flicker + a sub-cell mask to read as characters.
+    float cellRow = floor(uv.y * rows);
+    float g = rand(vec2(col, cellRow) + floor(iTime * mix(6.0, 14.0, seed)));
+    float glyph = step(0.35, g);
+    vec2 f = fract(vec2(fragCoord.x / cw, uv.y * rows));
+    float mask = step(0.12, f.x) * step(f.x, 0.88)
+               * step(0.10, f.y) * step(f.y, 0.90);
+    float lit = body * glyph * mask;
+
+    // The leading glyph glows near-white; the tail is green.
+    float headGlow = smoothstep(0.05, 0.0, abs(d)) * glyph * mask;
+    vec3 green = vec3(0.15, 1.0, 0.30);
+    vec3 rain = green * lit * 0.42 + vec3(0.80, 1.0, 0.85) * headGlow * 0.45;
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.14, lum);
+
+    vec3 res = term.rgb + rain * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+_GLSL_PIPES = """\
+// SpookiUI treat: Pipes.
+// A neon 2D homage to the Windows 95 "3D Pipes" screensaver: a lattice of
+// glowing pipe segments that pulse and cycle colour. A true 3D pipes maze needs
+// real geometry a terminal shader can't do, so this evokes the vibe in 2D.
+// Original SpookiUI shader; drawn only over dark background pixels.
+
+float h2(vec2 p) {
+    p = fract(p * vec2(127.1, 311.7));
+    p += dot(p, p + 34.1);
+    return fract(p.x * p.y);
+}
+
+float seg(vec2 p, vec2 a, vec2 b) {
+    vec2 pa = p - a, ba = b - a;
+    float t = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * t);
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+
+    float s = iResolution.y / 9.0;      // grid cell size (px) -> ~9 rows
+    vec2 g = fragCoord / s;             // grid-space coords (cell units)
+    vec2 cell = floor(g);
+
+    float best = 1e9;
+    vec2 bestNode = vec2(0.0);
+    // Test the pipe segments radiating from the 3x3 nearest lattice nodes.
+    for (int oy = -1; oy <= 1; oy++) {
+        for (int ox = -1; ox <= 1; ox++) {
+            vec2 node = cell + vec2(float(ox), float(oy));
+            if (h2(node + vec2(0.3, 0.7)) > 0.45) {          // edge going right
+                float d = seg(g, node, node + vec2(1.0, 0.0));
+                if (d < best) { best = d; bestNode = node + vec2(0.5, 0.0); }
+            }
+            if (h2(node + vec2(0.8, 0.2)) > 0.45) {          // edge going up
+                float d = seg(g, node, node + vec2(0.0, 1.0));
+                if (d < best) { best = d; bestNode = node + vec2(0.0, 0.5); }
+            }
+        }
+    }
+
+    float pipeR = 0.16;                 // pipe radius in cell units
+    float core = 1.0 - smoothstep(pipeR * 0.5, pipeR, best);
+    float glow = 1.0 - smoothstep(pipeR, pipeR * 2.6, best);
+
+    float hue = fract(0.05 * iTime + 0.15 * (bestNode.x + bestNode.y));
+    vec3 col = 0.5 + 0.5 * cos(6.2831 * (hue + vec3(0.0, 0.33, 0.67)));
+    float pulse = 0.6 + 0.4 * sin(iTime * 3.0 + (bestNode.x + bestNode.y) * 1.7);
+    vec3 pipe = col * (core * 0.55 + glow * 0.22) * pulse;
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+
+    vec3 res = term.rgb + pipe * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+_GLSL_MYSTIFY = """\
+// SpookiUI treat: Mystify.
+// The Windows 3.x/9x "Mystify" screensaver: a couple of polygons whose corners
+// drift and bounce off the edges, trailing colour. Original SpookiUI shader;
+// drawn faintly over dark background pixels only.
+
+const float THICK = 0.0016;   // line half-width (uv units)
+
+// Corner position for polygon `poly`, vertex `v`, bouncing in [0,1]^2.
+vec2 corner(float poly, float v, float aspect) {
+    float s = poly * 17.0 + v * 3.0;
+    vec2 speed = vec2(0.13 + 0.05 * fract(s * 1.7),
+                      0.11 + 0.05 * fract(s * 2.3));
+    vec2 phase = vec2(fract(s * 5.1), fract(s * 8.9));
+    // triangle wave -> smooth bounce between 0 and 1
+    vec2 t = fract(iTime * speed + phase);
+    vec2 p = abs(t * 2.0 - 1.0);
+    p.x *= aspect;                 // keep motion square-ish, not stretched
+    return p;
+}
+
+float seg(vec2 p, vec2 a, vec2 b) {
+    vec2 pa = p - a, ba = b - a;
+    float t = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * t);
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+    vec2 p = vec2(uv.x * aspect, uv.y);
+
+    vec3 acc = vec3(0.0);
+    const int POLYS = 2;
+    const int VERTS = 4;
+    for (int k = 0; k < POLYS; k++) {
+        float poly = float(k);
+        float hue = fract(0.04 * iTime + poly * 0.5);
+        vec3 col = 0.5 + 0.5 * cos(6.2831 * (hue + vec3(0.0, 0.33, 0.67)));
+        for (int i = 0; i < VERTS; i++) {
+            vec2 a = corner(poly, float(i), aspect);
+            vec2 b = corner(poly, float((i + 1) % VERTS), aspect);
+            float d = seg(p, a, b);
+            acc += col * (1.0 - smoothstep(THICK, THICK * 3.5, d));
+        }
+    }
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    vec3 res = term.rgb + acc * 0.5 * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+_GLSL_PLASMA = """\
+// SpookiUI treat: Plasma.
+// The classic demoscene / After Dark plasma field — layered sines that roll and
+// interfere. Original SpookiUI shader; kept dim and drawn over dark pixels only.
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+
+    vec2 p = uv * 6.0;
+    float t = iTime * 0.5;
+    float v = sin(p.x + t)
+            + sin(p.y + t * 1.3)
+            + sin((p.x + p.y) * 0.7 + t * 0.9)
+            + sin(length(p - 3.0) - t * 1.6);
+    v *= 0.25;                                   // back into ~[-1,1]
+
+    vec3 col = 0.5 + 0.5 * cos(6.2831 * (v + vec3(0.0, 0.33, 0.67)));
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    vec3 res = term.rgb + col * 0.14 * bgmask;   // very faint wash
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+_GLSL_BUBBLES = """\
+// SpookiUI treat: Lava Lamp.
+// Slow metaball blobs rising and merging like a 70s lava lamp / the old "Bubbles"
+// screensaver. Original SpookiUI shader; a soft, dim glow over dark pixels only.
+
+const int BLOBS = 5;
+
+float h(float n) { return fract(sin(n) * 43758.5453); }
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+    vec2 p = vec2(uv.x * aspect, uv.y);
+
+    float field = 0.0;
+    for (int i = 0; i < BLOBS; i++) {
+        float fi = float(i);
+        float x = (0.15 + 0.7 * h(fi * 3.7)) * aspect;
+        x += 0.06 * sin(iTime * (0.3 + 0.2 * h(fi)) + fi);
+        float speed = 0.05 + 0.05 * h(fi * 9.1);
+        float y = fract(h(fi * 5.3) + iTime * speed);       // rise, wrap
+        float r = 0.10 + 0.06 * h(fi * 2.1);
+        float d = length(p - vec2(x, y));
+        field += r * r / (d * d + 0.0007);                  // metaball falloff
+    }
+
+    float blob = smoothstep(0.9, 1.8, field);
+    float hue = fract(0.03 * iTime);
+    vec3 col = 0.5 + 0.5 * cos(6.2831 * (hue + vec3(0.0, 0.28, 0.55)));
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    vec3 res = term.rgb + col * blob * 0.22 * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+
+@dataclass
+class Treat:
+    slug: str          # file/CLI name, e.g. "matrix-rain"
+    name: str          # display name, e.g. "Matrix Rain"
+    desc: str          # one-line summary
+    glsl: str          # the full fragment-shader source
+    note: str = ""     # extra guidance shown in the detail pane
+
+
+TREATS: list[Treat] = [
+    Treat("matrix-rain", "Matrix Rain",
+          "Falling green glyph columns, cmatrix-style.",
+          _GLSL_MATRIX_RAIN,
+          "Drawn only over dark background pixels, so text stays readable."),
+    Treat("pipes", "Pipes",
+          "A neon homage to the Win95 3D Pipes screensaver.",
+          _GLSL_PIPES,
+          "A 2D shader can't do true 3D pipes — this evokes the vibe with a "
+          "glowing, colour-cycling pipe lattice."),
+    Treat("mystify", "Mystify",
+          "Bouncing, colour-trailing polygons — the Windows Mystify saver.",
+          _GLSL_MYSTIFY,
+          "Two polygons whose corners drift and bounce off the edges."),
+    Treat("plasma", "Plasma",
+          "A rolling demoscene plasma field, After Dark style.",
+          _GLSL_PLASMA,
+          "Kept as a very faint colour wash so your text stays legible."),
+    Treat("lava-lamp", "Lava Lamp",
+          "Slow rising metaball blobs — a 70s lava lamp / Bubbles saver.",
+          _GLSL_BUBBLES,
+          "Soft merging blobs drift upward and wrap around."),
+]
+
+TREAT_BY_SLUG: dict[str, Treat] = {t.slug: t for t in TREATS}
+
+
+def shaders_dir() -> str:
+    """Where SpookiUI writes its bundled treat shaders (namespaced so we never
+    disturb any `custom-shader` you added yourself)."""
+    return os.path.join(os.path.dirname(config_path()), "shaders", "spookiui")
+
+
+def treat_shader_path(t: Treat) -> str:
+    return os.path.join(shaders_dir(), t.slug + ".glsl")
+
+
+def write_treat_shader(t: Treat) -> str:
+    """Write a treat's GLSL to disk (idempotent), returning the absolute path."""
+    path = treat_shader_path(t)
+    os.makedirs(shaders_dir(), exist_ok=True)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if fh.read() == t.glsl:
+                return path
+    except OSError:
+        pass
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(t.glsl)
+    return path
+
+
+def _is_treat_path(value: str) -> bool:
+    """Whether a `custom-shader` value points at one of SpookiUI's own treats."""
+    base = os.path.abspath(shaders_dir()) + os.sep
+    return os.path.abspath(os.path.expanduser(value.strip())).startswith(base)
+
+
+def enabled_treat_slugs(sess: "Session") -> list[str]:
+    """Slugs of the treats currently enabled in the config (registry order)."""
+    active = set()
+    for v in sess.cfg.get_values("custom-shader"):
+        if _is_treat_path(v):
+            slug = os.path.splitext(os.path.basename(v.strip()))[0]
+            if slug in TREAT_BY_SLUG:
+                active.add(slug)
+    return [t.slug for t in TREATS if t.slug in active]
+
+
+def apply_treat_lines(sess: "Session", slugs) -> None:
+    """Mutate `sess.cfg.lines` so exactly `slugs` treats are active. Writes the
+    GLSL files (harmless — not config) and rewrites `custom-shader` +
+    `custom-shader-animation`, preserving any `custom-shader` entries you added
+    yourself. Does NOT validate/write/reload — callers do that (rollback-safe)."""
+    want = [t for t in TREATS if t.slug in set(slugs)]
+    for t in want:
+        write_treat_shader(t)
+    foreign = [v for v in sess.cfg.get_values("custom-shader")
+               if not _is_treat_path(v)]
+    new_list = foreign + [treat_shader_path(t) for t in want]
+    if new_list:
+        sess.cfg.set_list("custom-shader", new_list)
+    else:
+        sess.cfg.unset("custom-shader")
+    if want:
+        # Our treats are animated, but keep the render loop tied to focus/activity
+        # (`true`) rather than running unconditionally (`always`) — `always` keeps
+        # the GPU busy even on an idle, unfocused window, which is the main source
+        # of the "too much resource usage" people notice.
+        sess.cfg.set_scalar("custom-shader-animation", "true")
+    elif not new_list:
+        sess.cfg.unset("custom-shader-animation")
+    # else: only your own shaders remain — leave custom-shader-animation alone.
+
+
+def set_treats(sess: "Session", slugs) -> tuple[bool, str]:
+    """Enable exactly `slugs`, following the validate → back up → write → reload
+    → rollback discipline every mutation path uses."""
+    snap = list(sess.cfg.lines)
+    try:
+        apply_treat_lines(sess, slugs)
+    except OSError as e:
+        sess.cfg.lines = snap
+        return False, f"could not write shader file: {e}"
+    ok, errs = validate(sess.cfg.render())
+    if not ok:
+        sess.cfg.lines = snap
+        return False, "invalid: " + (errs[0] if errs else "validation failed")
+    sess.ensure_backup()
+    sess.cfg.write()
+    sess.dirty = False
+    if sess.auto_apply and CAN_RELOAD:
+        r_ok, m = reload_ghostty()
+        return True, ("treats applied + reloaded live" if r_ok
+                      else f"treats applied (reload: {m})")
+    return True, "treats applied"
+
+
 _HEX_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
 
 
@@ -1633,6 +2021,7 @@ class App:
                 self.by_cat[c] = names
         self.categories = [c for c in CATEGORY_ORDER if c in self.by_cat]
         self.categories.append(UTILS_CATEGORY)
+        self.categories.append(TREATS_CATEGORY)
 
         self._swatch_cache: dict[int, int] = {}
         self._pair_cache: dict[tuple, int] = {}
@@ -1814,7 +2203,7 @@ class App:
         if not self.categories:
             return []
         cat = self.categories[self.cat_idx]
-        if cat == UTILS_CATEGORY:
+        if cat in (UTILS_CATEGORY, TREATS_CATEGORY):
             return []
         return self.by_cat[cat]
 
@@ -1882,7 +2271,7 @@ class App:
             attr = c.A_NORMAL
             if self.icons:
                 icon = CATEGORY_ICONS.get(cat, DEFAULT_CATEGORY_ICON)
-                name = "Utils" if cat == UTILS_CATEGORY else cat
+                name = {UTILS_CATEGORY: "Utils", TREATS_CATEGORY: "Treats"}.get(cat, cat)
                 label = f" {icon}  {name}"
             else:
                 label = f" {cat}"
@@ -1899,6 +2288,10 @@ class App:
         if self.cur_cat() == UTILS_CATEGORY:
             self._draw_utils_menu(top, bottom, cat_w, opt_w)
             self._draw_utils_detail(top, bottom, det_x, w - det_x - 1)
+            return
+        if self.cur_cat() == TREATS_CATEGORY:
+            self._draw_treats_menu(top, bottom, cat_w, opt_w)
+            self._draw_treats_detail(top, bottom, det_x, w - det_x - 1)
             return
 
         names = self.current_names()
@@ -2023,7 +2416,7 @@ class App:
         if self.search_mode:
             hints = " type to filter · ↑↓ move · Enter edit · Esc exit search "
         elif self.focus == "cats":
-            hints = " ↑↓ category · →/Enter options · / search · a auto-apply · v utils · d changes · ? help · q quit "
+            hints = " ↑↓ category · →/Enter options · / search · a auto-apply · v utils · t treats · d changes · ? help · q quit "
         else:
             hints = " ↑↓ option · Enter/→ edit · ← back · u reset · s save · r reload · / search · ? help · q quit "
         bar = hints + " " * max(0, w - len(hints))
@@ -2082,6 +2475,9 @@ class App:
         if ch in (ord("v"), ord("V")):
             self._utils_overlay()
             return True
+        if ch in (ord("t"), ord("T")):
+            self._treats_overlay()
+            return True
         if ch in (ord("["),):
             self.doc_scroll = max(0, self.doc_scroll - 1); return True
         if ch in (ord("]"),):
@@ -2102,6 +2498,8 @@ class App:
         elif ch in (c.KEY_RIGHT, ord("l"), ord("\n"), c.KEY_ENTER, 10, 13):
             if self.cur_cat() == UTILS_CATEGORY:
                 self._utils_overlay()
+            elif self.cur_cat() == TREATS_CATEGORY:
+                self._treats_overlay()
             else:
                 self.focus = "opts"
         return True
@@ -2124,6 +2522,8 @@ class App:
         elif ch in (ord("\n"), c.KEY_ENTER, 10, 13, c.KEY_RIGHT, ord("l")):
             if self.cur_cat() == UTILS_CATEGORY:
                 self._utils_overlay()
+            elif self.cur_cat() == TREATS_CATEGORY:
+                self._treats_overlay()
             else:
                 self.edit_current()
         return True
@@ -3053,6 +3453,139 @@ class App:
         self.scr.refresh()
         self.scr.getch()
 
+    # ── Treats (background shaders) ─────────────────────────────────────────
+
+    def _draw_treats_menu(self, top, bottom, cat_w, opt_w):
+        c = self.curses
+        x0 = cat_w + 1
+        active = set(enabled_treat_slugs(self.sess))
+        for i, t in enumerate(TREATS):
+            y = top + i
+            if y > bottom:
+                break
+            box = "[x]" if t.slug in active else "[ ]"
+            attr = (c.color_pair(6) if t.slug in active else c.color_pair(5)) | c.A_BOLD
+            self.safe(y, x0, (box + " " + t.name)[: opt_w - 2], attr)
+        y = top + len(TREATS) + 1
+        if y <= bottom:
+            self.safe(y, x0, "Enter → open", c.color_pair(6))
+
+    def _draw_treats_detail(self, top, bottom, x, width):
+        c = self.curses
+        if width < 10:
+            return
+        y = top
+        self.safe(y, x, "Treats", c.color_pair(10) | c.A_BOLD); y += 1
+        self.safe(y, x, "fun animated background shaders", c.color_pair(2)); y += 2
+        self.safe(y, x, "Press → or Enter to open, then Space to toggle.",
+                  c.color_pair(4)); y += 2
+        active = enabled_treat_slugs(self.sess)
+        status = ("on: " + ", ".join(TREAT_BY_SLUG[s].name for s in active)
+                  if active else "all off (default)")
+        self.safe(y, x, status[:width], c.color_pair(6) if active else c.color_pair(4))
+
+    def _commit_treats(self, slugs):
+        """Toggle treats live if auto-apply, else stage. Mirrors _commit_list:
+        snapshot, mutate, validate, roll back on failure."""
+        snap = list(self.sess.cfg.lines)
+        try:
+            apply_treat_lines(self.sess, slugs)
+        except OSError as e:
+            self.sess.cfg.lines = snap
+            return False, [str(e)]
+        if not self.sess.auto_apply:
+            self.sess.dirty = True
+            return True, []
+        text = self.sess.cfg.render()
+        ok, errs = validate(text)
+        if not ok:
+            self.sess.cfg.lines = snap
+            return False, errs
+        self.sess.ensure_backup()
+        self.sess.cfg.write(text)
+        self.sess.dirty = False
+        reload_ghostty()
+        return True, []
+
+    def _treats_overlay(self):
+        c = self.curses
+        sel = 0
+        note = ""
+        note_kind = "info"
+        while True:
+            self.scr.erase()
+            h, w = self.dims()
+            self.safe(0, 0, " treats · fun background shaders ".ljust(w),
+                      c.color_pair(1) | c.A_BOLD)
+            active = set(enabled_treat_slugs(self.sess))
+            list_w = 24
+            top = 2
+            for i, t in enumerate(TREATS):
+                y = top + i
+                if y >= h - 3:
+                    break
+                box = "[x]" if t.slug in active else "[ ]"
+                on = t.slug in active
+                if i == sel:
+                    attr = c.color_pair(3) | c.A_BOLD
+                else:
+                    attr = (c.color_pair(6) if on else c.A_NORMAL)
+                self.safe(y, 2, ("→ " if i == sel else "  ") + box + " " + t.name, attr)
+            for y in range(top, h - 3):
+                self.safe(y, list_w, "│", c.color_pair(4))
+
+            t = TREATS[sel]
+            dx, dw = list_w + 2, w - list_w - 3
+            y = top
+            self.safe(y, dx, t.name, c.color_pair(10) | c.A_BOLD); y += 1
+            state = "ENABLED" if t.slug in active else "off"
+            self.safe(y, dx, "state: " + state,
+                      (c.color_pair(6) if t.slug in active else c.color_pair(4))
+                      | c.A_BOLD); y += 2
+            for para in (t.desc, t.note):
+                if not para:
+                    continue
+                for seg in self._wrap(para, dw):
+                    if y >= h - 3:
+                        break
+                    self.safe(y, dx, seg[:dw], c.color_pair(4)); y += 1
+                y += 1
+            y += 0
+            path = treat_shader_path(t)
+            self.safe(y, dx, ("shader: " + _tilde(path))[:dw], c.color_pair(2)); y += 2
+            if not CAN_RELOAD:
+                self.safe(y, dx, "(reload manually on this platform)",
+                          c.color_pair(8)); y += 1
+            if note:
+                self.safe(h - 3, 0, (" " + note).ljust(w),
+                          c.color_pair({"ok": 6, "error": 7, "warn": 8}.get(
+                              note_kind, 2)) | c.A_BOLD)
+            self.safe(h - 1, 0,
+                      " ↑↓ move · Space/Enter toggle · Esc close ".ljust(w),
+                      c.color_pair(1))
+            self.scr.refresh()
+            ch = self.scr.getch()
+            if ch in (27,):
+                return
+            if ch in (c.KEY_UP, ord("k")):
+                sel = max(0, sel - 1); note = ""
+            elif ch in (c.KEY_DOWN, ord("j")):
+                sel = min(len(TREATS) - 1, sel + 1); note = ""
+            elif ch in (ord(" "), ord("\n"), c.KEY_ENTER, 10, 13):
+                t = TREATS[sel]
+                want = set(enabled_treat_slugs(self.sess))
+                turning_on = t.slug not in want
+                want.symmetric_difference_update({t.slug})
+                ok, errs = self._commit_treats(sorted(want))
+                if ok:
+                    tag = "live" if self.sess.auto_apply else "staged"
+                    note = f"{t.name} {'ON' if turning_on else 'off'} ({tag})"
+                    note_kind = "ok"
+                    self._msg(note, "ok")
+                else:
+                    note = "failed: " + (errs[0] if errs else "?")
+                    note_kind = "error"
+
     def _help(self):
         c = self.curses
         info = self._update_info
@@ -3092,6 +3625,7 @@ class App:
             "  p   profiles — save / load / delete named configs, light↔dark",
             "  c   config check — health-check for issues (doctor)",
             "  v   utils — one-shot fixes (e.g. Fix SSH for garbled remote shells)",
+            "  t   treats — toggle fun background shaders (stars, matrix, pipes)",
             "  d   show what you've changed",
             "  q   quit",
             "",
@@ -3340,6 +3874,45 @@ def cli_fix_ssh(sess: Session, args) -> int:
     return 0 if ok else 1
 
 
+def cli_treats(sess: Session, args) -> int:
+    """Toggle SpookiUI's fun background shaders ('treats')."""
+    action = args.action or "list"
+    active = enabled_treat_slugs(sess)
+
+    if action == "list":
+        for t in TREATS:
+            box = "[x]" if t.slug in active else "[ ]"
+            print(f"{box} {t.slug:12} {t.desc}")
+        return 0
+
+    slugs = list(getattr(args, "name", None) or [])
+    if action == "clear":
+        target: list[str] = []
+    else:
+        unknown = [s for s in slugs if s not in TREAT_BY_SLUG]
+        if unknown:
+            print(f"unknown treat(s): {', '.join(unknown)}", file=sys.stderr)
+            print("available: " + ", ".join(t.slug for t in TREATS), file=sys.stderr)
+            return 2
+        if not slugs:
+            print(f"'{action}' needs at least one treat name "
+                  f"(one of: {', '.join(t.slug for t in TREATS)})", file=sys.stderr)
+            return 2
+        if action == "enable":
+            target = [t.slug for t in TREATS
+                      if t.slug in active or t.slug in slugs]
+        elif action == "disable":
+            target = [s for s in active if s not in slugs]
+        else:  # "only"
+            target = [t.slug for t in TREATS if t.slug in slugs]
+
+    ok, m = set_treats(sess, target)
+    now = enabled_treat_slugs(sess) if ok else active
+    print(m + " · on: " + (", ".join(now) if now else "none"),
+          file=sys.stdout if ok else sys.stderr)
+    return 0 if ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="spookiui",
@@ -3412,6 +3985,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--explain", action="store_true",
                     help="explain what the fix does and why, then exit")
     sp.set_defaults(func=cli_fix_ssh)
+
+    sp = sub.add_parser(
+        "treats",
+        help="toggle fun background shaders (stars, matrix, pipes); all off by default")
+    sp.add_argument("action", nargs="?", default="list",
+                    choices=["list", "enable", "disable", "only", "clear"],
+                    help="list (default), enable/disable/only <name…>, or clear")
+    sp.add_argument("name", nargs="*", help="treat slug(s) for enable/disable/only")
+    sp.set_defaults(func=cli_treats)
     return p
 
 

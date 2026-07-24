@@ -300,9 +300,10 @@ They're designed to stay out of your way:
   validate → back up → write → reload → rollback discipline as every other edit.
 
 - **Adjustable vibrancy** — a single 0–100% control fades the active treat's
-  animation up or down (100% is the tuned default, 0% is invisible). Set it with
-  `v` in the treats overlay, or `treats vibrancy <0-100>` from the CLI. It's a
-  global preference, so it applies to whichever treat you turn on.
+  animation up or down (100% is the tuned default, 0% is invisible). Pick the
+  **Vibrancy** row in the treats overlay to open the slider (or press `v`), or use
+  `treats vibrancy <0-100>` from the CLI. It's a global preference, so it applies
+  to whichever treat you turn on.
 
 Toggle them in the TUI (`Space`/`Enter`, `v` for vibrancy), or from the CLI:
 

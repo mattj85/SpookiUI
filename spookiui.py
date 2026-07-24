@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.10.0"
+__version__ = "1.10.1"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -3931,7 +3931,10 @@ class App:
         active = enabled_treat_slugs(self.sess)
         status = ("on: " + ", ".join(TREAT_BY_SLUG[s].name for s in active)
                   if active else "all off (default)")
-        self.safe(y, x, status[:width], c.color_pair(6) if active else c.color_pair(4))
+        self.safe(y, x, status[:width],
+                  c.color_pair(6) if active else c.color_pair(4)); y += 1
+        vib = int(round(get_treat_vibrancy() * 100))
+        self.safe(y, x, f"vibrancy: {vib}%"[:width], c.color_pair(4))
 
     def _commit_treats(self, slugs):
         """Toggle treats live if auto-apply, else stage. Mirrors _commit_list:
@@ -3961,12 +3964,16 @@ class App:
         sel = 0
         note = ""
         note_kind = "info"
+        # The list is the treats followed by one "Vibrancy" menu row, so the
+        # slider is a discoverable, navigable option — not just a hidden key.
+        vib_row = len(TREATS)
+        nrows = len(TREATS) + 1
         while True:
             self.scr.erase()
             h, w = self.dims()
             vib = int(round(get_treat_vibrancy() * 100))
             self.safe(0, 0,
-                      f" treats · fun background shaders · vibrancy {vib}% ".ljust(w),
+                      " treats · fun background shaders ".ljust(w),
                       c.color_pair(1) | c.A_BOLD)
             active = set(enabled_treat_slugs(self.sess))
             list_w = 24
@@ -3982,37 +3989,58 @@ class App:
                 else:
                     attr = (c.color_pair(6) if on else c.A_NORMAL)
                 self.safe(y, 2, ("→ " if i == sel else "  ") + box + " " + t.name, attr)
+            # Vibrancy menu row, one blank line below the treats.
+            vy = top + len(TREATS) + 1
+            if vy < h - 3:
+                vattr = (c.color_pair(3) | c.A_BOLD if sel == vib_row
+                         else c.color_pair(6))
+                self.safe(vy, 2,
+                          ("→ " if sel == vib_row else "  ") + f"Vibrancy  {vib}%",
+                          vattr)
             for y in range(top, h - 3):
                 self.safe(y, list_w, "│", c.color_pair(4))
 
-            t = TREATS[sel]
             dx, dw = list_w + 2, w - list_w - 3
             y = top
-            self.safe(y, dx, t.name, c.color_pair(10) | c.A_BOLD); y += 1
-            state = "ENABLED" if t.slug in active else "off"
-            self.safe(y, dx, "state: " + state,
-                      (c.color_pair(6) if t.slug in active else c.color_pair(4))
-                      | c.A_BOLD); y += 2
-            for para in (t.desc, t.note):
-                if not para:
-                    continue
-                for seg in self._wrap(para, dw):
-                    if y >= h - 3:
-                        break
-                    self.safe(y, dx, seg[:dw], c.color_pair(4)); y += 1
-                y += 1
-            y += 0
-            path = treat_shader_path(t)
-            self.safe(y, dx, ("shader: " + _tilde(path))[:dw], c.color_pair(2)); y += 2
-            if not CAN_RELOAD:
-                self.safe(y, dx, "(reload manually on this platform)",
-                          c.color_pair(8)); y += 1
+            if sel == vib_row:
+                self.safe(y, dx, "Vibrancy", c.color_pair(10) | c.A_BOLD); y += 1
+                self.safe(y, dx, f"{vib}%", c.color_pair(6) | c.A_BOLD); y += 2
+                for para in ("How strongly the active treat's animation shows.",
+                             "100% is the tuned look treats ship with; lower fades "
+                             "the effect toward invisible.",
+                             "Applies to whichever treat is on."):
+                    for seg in self._wrap(para, dw):
+                        if y >= h - 3:
+                            break
+                        self.safe(y, dx, seg[:dw], c.color_pair(4)); y += 1
+                    y += 1
+                self.safe(y, dx, "Space/Enter → adjust", c.color_pair(2)); y += 1
+            else:
+                t = TREATS[sel]
+                self.safe(y, dx, t.name, c.color_pair(10) | c.A_BOLD); y += 1
+                state = "ENABLED" if t.slug in active else "off"
+                self.safe(y, dx, "state: " + state,
+                          (c.color_pair(6) if t.slug in active else c.color_pair(4))
+                          | c.A_BOLD); y += 2
+                for para in (t.desc, t.note):
+                    if not para:
+                        continue
+                    for seg in self._wrap(para, dw):
+                        if y >= h - 3:
+                            break
+                        self.safe(y, dx, seg[:dw], c.color_pair(4)); y += 1
+                    y += 1
+                path = treat_shader_path(t)
+                self.safe(y, dx, ("shader: " + _tilde(path))[:dw], c.color_pair(2)); y += 2
+                if not CAN_RELOAD:
+                    self.safe(y, dx, "(reload manually on this platform)",
+                              c.color_pair(8)); y += 1
             if note:
                 self.safe(h - 3, 0, (" " + note).ljust(w),
                           c.color_pair({"ok": 6, "error": 7, "warn": 8}.get(
                               note_kind, 2)) | c.A_BOLD)
             self.safe(h - 1, 0,
-                      " ↑↓ move · Space/Enter toggle · v vibrancy · Esc close ".ljust(w),
+                      " ↑↓ move · Space/Enter select · Esc close ".ljust(w),
                       c.color_pair(1))
             self.scr.refresh()
             ch = self.scr.getch()
@@ -4025,8 +4053,12 @@ class App:
             if ch in (c.KEY_UP, ord("k")):
                 sel = max(0, sel - 1); note = ""
             elif ch in (c.KEY_DOWN, ord("j")):
-                sel = min(len(TREATS) - 1, sel + 1); note = ""
+                sel = min(nrows - 1, sel + 1); note = ""
             elif ch in (ord(" "), ord("\n"), c.KEY_ENTER, 10, 13):
+                if sel == vib_row:
+                    note = self._treat_vibrancy_slider()
+                    note_kind = "ok"
+                    continue
                 t = TREATS[sel]
                 active_now = enabled_treat_slugs(self.sess)
                 turning_on = t.slug not in active_now
@@ -4155,7 +4187,7 @@ class App:
             "  p   profiles — save / load / delete named configs, light↔dark",
             "  c   config check — health-check for issues (doctor)",
             "  v   utils — one-shot fixes (e.g. Fix SSH for garbled remote shells)",
-            "  t   treats — toggle fun background shaders; v inside sets vibrancy",
+            "  t   treats — toggle fun background shaders & set their vibrancy",
             "  d   show what you've changed",
             "  q   quit",
             "",

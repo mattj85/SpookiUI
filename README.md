@@ -16,6 +16,13 @@ very terminal you're in repaints as you edit.
 
 ---
 
+## A note on how this is built
+
+This started as a Claude project — a quick way to see the idea working. It
+didn't stay one. After 20-odd years writing software, I pulled it back to the
+keyboard and now maintain it by hand, the old-school way: I read every line,
+I own every line. Claude helped it exist; the craft since then is mine.
+
 ## Installation
 
 SpookiUI has **no third-party Python dependencies** — it's a single script that
@@ -208,7 +215,7 @@ when there are errors, so it drops cleanly into a pre-commit hook for dotfiles.
 
 ## Utils — one-shot fixes
 
-The **⚙ Utils** category (last entry in the left pane, or press `v` anywhere)
+The **Utils** category (last entry in the left pane, or press `v` anywhere)
 collects small, one-shot maintenance actions that aren't Ghostty config options.
 Highlight an action to read what it does; press `Enter`/`→` to run it.
 
@@ -250,7 +257,7 @@ Run it from the CLI too:
 
 ## Treats — fun background shaders
 
-The **🍬 Treats** category (press `t` anywhere, or find it in the left pane)
+The **Treats** category (press `t` anywhere, or find it in the left pane)
 bundles a handful of nostalgic, animated background shaders. Ghostty can run a
 ShaderToy-style GLSL shader behind the terminal grid; a treat is one SpookiUI
 writes for you into `<ghostty-config-dir>/shaders/spookiui/` and toggles on via
@@ -354,7 +361,7 @@ Examples:
 ## Updates
 
 On startup SpookiUI quietly checks GitHub for a newer release. If one exists, the
-TUI shows a `⬆ UPDATE vX.Y.Z` badge in the header (and *press `U` to update* on the
+TUI shows a `UPDATE vX.Y.Z` badge in the header (and *press `U` to update* on the
 status line); the help screen (`?`) always shows your current version. Run
 `spookiui version` any time to check on demand.
 

@@ -299,14 +299,20 @@ They're designed to stay out of your way:
   `custom-shader` you added yourself is preserved, and toggling follows the same
   validate → back up → write → reload → rollback discipline as every other edit.
 
-Toggle them in the TUI (`Space`/`Enter`), or from the CLI:
+- **Adjustable vibrancy** — a single 0–100% control fades the active treat's
+  animation up or down (100% is the tuned default, 0% is invisible). Set it with
+  `v` in the treats overlay, or `treats vibrancy <0-100>` from the CLI. It's a
+  global preference, so it applies to whichever treat you turn on.
+
+Toggle them in the TUI (`Space`/`Enter`, `v` for vibrancy), or from the CLI:
 
 ```bash
-./spookiui.py treats list                 # show treats and which one is on
+./spookiui.py treats list                 # show treats, vibrancy, and which one is on
 ./spookiui.py treats enable matrix-rain    # make this the active treat (replaces any other)
 ./spookiui.py treats disable pipes         # turn the active treat off
 ./spookiui.py treats only plasma           # same as enable — one treat at a time
 ./spookiui.py treats clear                 # turn the treat off
+./spookiui.py treats vibrancy 60           # fade the animation to 60% (blank prints current)
 ```
 
 ## Scriptable CLI

@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.9.1"
+__version__ = "1.10.0"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -64,6 +64,11 @@ IS_MACOS = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
 CAN_RELOAD = IS_MACOS or IS_LINUX
 INSIDE_GHOSTTY = os.environ.get("TERM_PROGRAM") == "ghostty"
+# Whether the running Ghostty exposes the `iFocus` custom-shader uniform (newer
+# versions). Detected from the docs scrape in load_schema(). When true, treats
+# hide + dim an unfocused window; when false we fall back to the plain composite
+# so treats keep working unchanged on older Ghostty. Default False = safe.
+SUPPORTS_SHADER_FOCUS = False
 CURRENT_PLATFORM = "macos" if IS_MACOS else ("linux" if IS_LINUX else None)
 
 
@@ -617,6 +622,11 @@ def load_schema() -> dict[str, Option]:
     proc = _run([GHOSTTY, "+show-config", "--default", "--docs"], timeout=30)
     if proc.returncode != 0 and not proc.stdout:
         raise RuntimeError("failed to read ghostty defaults: " + proc.stderr.strip())
+
+    # Treats gate their focus-aware dimming on whether this Ghostty documents the
+    # `iFocus` shader uniform (it's described in the `custom-shader` doc block).
+    global SUPPORTS_SHADER_FOCUS
+    SUPPORTS_SHADER_FOCUS = "iFocus" in proc.stdout
 
     options: dict[str, Option] = {}
     doc_buf: list[str] = []
@@ -1256,6 +1266,32 @@ def profiles_dir() -> str:
     return os.path.join(spookiui_data_dir(), "profiles")
 
 
+def treats_state_path() -> str:
+    """Small global-preference file for treats (currently just vibrancy). Kept
+    outside Ghostty's config so it's a preference, not part of any saved profile."""
+    return os.path.join(spookiui_data_dir(), "treats.json")
+
+
+def get_treat_vibrancy() -> float:
+    """How strongly the active treat's animation shows, in [0.0, 1.0]. 1.0 (the
+    default) is the tuned look treats ship with; lower fades the effect toward
+    invisible. Tolerant of a missing/corrupt file — always returns a sane value."""
+    try:
+        with open(treats_state_path(), encoding="utf-8") as fh:
+            v = float(json.load(fh).get("vibrancy", 1.0))
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        return 1.0
+    return max(0.0, min(1.0, v))
+
+
+def set_treat_vibrancy_value(v: float) -> None:
+    """Persist the treat vibrancy (clamped to [0.0, 1.0]) to the preference file."""
+    v = max(0.0, min(1.0, v))
+    os.makedirs(spookiui_data_dir(), exist_ok=True)
+    with open(treats_state_path(), "w", encoding="utf-8") as fh:
+        json.dump({"vibrancy": round(v, 2)}, fh)
+
+
 def icons_available(sess: "Session") -> bool:
     """Whether to show Nerd Font category icons. We can't ask the terminal if a
     glyph will render, so we key off the strongest signal we have: the terminal
@@ -1543,6 +1579,14 @@ def apply_ssh_fix() -> tuple[bool, str]:
 # A "treat" is one of these shaders that SpookiUI bundles, writes to
 # `<ghostty-config-dir>/shaders/spookiui/<slug>.glsl`, and toggles for you.
 #
+# When Ghostty exposes the `iFocus` shader uniform (newer versions — see
+# SUPPORTS_SHADER_FOCUS), every treat also uses it to *set the unfocused window
+# apart*: an unfocused terminal hides the treat and renders dimmed + desaturated
+# (via the shared `spooki_out` helper in `compose_shader`). Combined with
+# `custom-shader-animation = true`, this means only the focused window animates,
+# and every other window visibly reads as "inactive". On older Ghostty without
+# `iFocus` the treats fall back to their plain look and nothing changes.
+#
 # Every treat composites *additively* over the terminal and only brightens the
 # darkest background pixels (a tight luminance mask), so the effect fades into the
 # background and your text, cursor, and borders stay readable. Brightness and
@@ -1553,6 +1597,12 @@ def apply_ssh_fix() -> tuple[bool, str]:
 # All treats are original SpookiUI shaders written to the same convention: they
 # composite additively, gated by a tight luminance mask so only the darkest
 # background pixels are touched and your text always stays legible.
+#
+# A single "vibrancy" preference (0–100%, `get_treat_vibrancy`) uniformly scales
+# whichever treat is active — 100% is the tuned look shown here, lower fades the
+# animation toward invisible. It's baked into the shader at write time by
+# `compose_shader` (via the `SPOOKI_VIBRANCY` const in `spooki_out`), set with the
+# `v` key in the treats overlay or `spookiui treats vibrancy <0-100>`.
 _GLSL_MATRIX_RAIN = """\
 // SpookiUI treat: Matrix Rain.
 // Falling green glyph columns in the spirit of `cmatrix`. Drawn only over dark
@@ -2039,18 +2089,75 @@ def treat_shader_path(t: Treat) -> str:
     return os.path.join(shaders_dir(), t.slug + ".glsl")
 
 
-def write_treat_shader(t: Treat) -> str:
-    """Write a treat's GLSL to disk (idempotent), returning the absolute path."""
+# Every treat body ends with this exact line, compositing its additive effect
+# (`res`) over the terminal. We swap it for a call to the shared `spooki_out`
+# helper prepended below, which decides what the unfocused window looks like.
+_SHADER_TAIL = "fragColor = vec4(min(res, vec3(1.0)), term.a);"
+_SHADER_TAIL_NEW = "fragColor = spooki_out(res, term);"
+
+# `spooki_out` scales the treat's additive effect by `SPOOKI_VIBRANCY` (baked in
+# by compose_shader, in [0,1]). `res` is `term.rgb + effect`, so the effect is
+# `res - term.rgb`; at vibrancy 1.0 this reduces to the original `min(res, 1.0)`
+# exactly (the tuned look), and toward 0.0 the animation fades to invisible.
+#
+# Focus-aware output: when the surface is unfocused (Ghostty's `iFocus` uniform
+# is 0), hide the treat entirely and render the terminal dimmed + desaturated so
+# an inactive window is easy to tell apart from the focused one. Prepended before
+# the treat body so `spooki_out` is declared before `mainImage` uses it.
+_FOCUS_EPILOGUE = """\
+// added by SpookiUI: when this window is unfocused, hide the treat and show the
+// terminal dimmed + desaturated so the inactive window is set apart from the
+// focused one. `iFocus` is 1.0 while focused, 0.0 while unfocused.
+vec4 spooki_out(vec3 res, vec4 term) {
+    if (iFocus < 0.5) {
+        float g = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));  // luminance
+        vec3 inactive = mix(term.rgb, vec3(g), 0.55) * 0.55;    // desaturate, dim
+        return vec4(inactive, term.a);
+    }
+    vec3 fx = term.rgb + (res - term.rgb) * SPOOKI_VIBRANCY;    // scale the effect
+    return vec4(min(fx, vec3(1.0)), term.a);
+}
+
+"""
+
+# Fallback for Ghostty versions without `iFocus`: the original passthrough (still
+# scaled by vibrancy), so treats render as before on old builds.
+_PLAIN_EPILOGUE = """\
+vec4 spooki_out(vec3 res, vec4 term) {
+    vec3 fx = term.rgb + (res - term.rgb) * SPOOKI_VIBRANCY;    // scale the effect
+    return vec4(min(fx, vec3(1.0)), term.a);
+}
+
+"""
+
+
+def compose_shader(t: Treat, vibrancy: float = 1.0) -> str:
+    """The full GLSL written to disk: the treat's effect wired through the shared
+    `spooki_out` helper, scaled by `vibrancy` (baked in as a GLSL const, since
+    Ghostty custom shaders can't take user uniforms). When this Ghostty exposes
+    `iFocus`, an unfocused window hides the treat and is dimmed + desaturated;
+    otherwise the plain passthrough is used so treats work on older Ghostty."""
+    epilogue = _FOCUS_EPILOGUE if SUPPORTS_SHADER_FOCUS else _PLAIN_EPILOGUE
+    header = f"const float SPOOKI_VIBRANCY = {max(0.0, min(1.0, vibrancy)):.2f};\n\n"
+    return header + epilogue + t.glsl.replace(_SHADER_TAIL, _SHADER_TAIL_NEW)
+
+
+def write_treat_shader(t: Treat, vibrancy: float | None = None) -> str:
+    """Write a treat's GLSL to disk (idempotent), returning the absolute path.
+    `vibrancy` defaults to the saved global preference."""
+    if vibrancy is None:
+        vibrancy = get_treat_vibrancy()
     path = treat_shader_path(t)
     os.makedirs(shaders_dir(), exist_ok=True)
+    source = compose_shader(t, vibrancy)
     try:
         with open(path, encoding="utf-8") as fh:
-            if fh.read() == t.glsl:
+            if fh.read() == source:
                 return path
     except OSError:
         pass
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write(t.glsl)
+        fh.write(source)
     return path
 
 
@@ -2124,6 +2231,28 @@ def set_treats(sess: "Session", slugs) -> tuple[bool, str]:
     return True, "treats applied"
 
 
+def set_treat_vibrancy(sess: "Session", percent: int) -> tuple[bool, str]:
+    """Set how strongly treats show, as a 0–100 percentage. Persists the global
+    preference and re-bakes the active treat's shader (if any) so the change is
+    live. Only a `.glsl` file changes — never the config file — so there's nothing
+    to validate/roll back; a live reload just picks up the new shader source."""
+    percent = max(0, min(100, percent))
+    set_treat_vibrancy_value(percent / 100.0)
+    active = enabled_treat_slugs(sess)
+    if not active:
+        return True, f"vibrancy set to {percent}% (no treat active)"
+    try:
+        for slug in active:
+            write_treat_shader(TREAT_BY_SLUG[slug])
+    except OSError as e:
+        return False, f"could not write shader file: {e}"
+    if sess.auto_apply and CAN_RELOAD:
+        r_ok, m = reload_ghostty()
+        return True, (f"vibrancy set to {percent}% + reloaded live" if r_ok
+                      else f"vibrancy set to {percent}% (reload: {m})")
+    return True, f"vibrancy set to {percent}%"
+
+
 _HEX_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
 
 
@@ -2161,6 +2290,27 @@ def rgb_to_256(r: int, g: int, b: int) -> int:
     return ci if d_cube <= d_gray else gray
 
 
+def _prelaunch_update_check(timeout: float = 3.0) -> dict | None:
+    """Run the update check on launch, bounded so a slow network never stalls the
+    UI. Almost always instant (the result is cached for a day); only the once-a-day
+    live check can block, and it gives up after `timeout` seconds. Returns the same
+    dict as check_for_update() (or None if disabled / not ready / offline)."""
+    if _update_check_disabled():
+        return None
+    box: dict = {}
+
+    def worker():
+        try:
+            box["info"] = check_for_update()
+        except Exception:
+            box["info"] = None
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout)
+    return box.get("info")
+
+
 def run_tui(sess: "Session") -> None:
     import curses
     import locale
@@ -2173,12 +2323,17 @@ def run_tui(sess: "Session") -> None:
     if not icons:
         _maybe_show_icon_notice()
 
+    # Check for an update before drawing anything, so the App can greet the user
+    # with a centered update prompt if a newer release is out.
+    update_info = _prelaunch_update_check()
+
     try:
         curses.set_escdelay(25)
     except Exception:
         pass
     try:
-        curses.wrapper(lambda scr: App(scr, sess, icons=icons).run())
+        curses.wrapper(
+            lambda scr: App(scr, sess, icons=icons, update_info=update_info).run())
     except KeyboardInterrupt:
         pass
 
@@ -2208,7 +2363,8 @@ def _maybe_show_icon_notice() -> None:
 
 
 class App:
-    def __init__(self, stdscr, sess: Session, icons: bool = False):
+    def __init__(self, stdscr, sess: Session, icons: bool = False,
+                 update_info: dict | None = None):
         import curses
         self.curses = curses
         self.scr = stdscr
@@ -2239,9 +2395,15 @@ class App:
         self._next_pair = 32
         self._init_colors()
 
-        self._update_info: dict | None = None
+        self._update_info: dict | None = update_info
         self._update_announced = False
-        self._start_update_check()
+        # If a newer release turned up in the pre-launch check, greet the user
+        # with a centered prompt before the main loop draws.
+        self._launch_prompt_pending = bool(update_info and update_info.get("outdated"))
+        # Only fall back to a background check when the pre-launch one didn't
+        # already give us an answer (e.g. it timed out on a slow network).
+        if update_info is None:
+            self._start_update_check()
 
         curses.curs_set(0)
         stdscr.keypad(True)
@@ -2427,6 +2589,11 @@ class App:
 
     def run(self):
         c = self.curses
+        if self._launch_prompt_pending:
+            self._launch_update_prompt()
+            self._launch_prompt_pending = False
+            # We've already told the user; don't also nag on the status line.
+            self._update_announced = True
         while True:
             self.draw()
             try:
@@ -2868,6 +3035,77 @@ class App:
         self._msg(f"updating to {info['latest']}…", "info"); self.draw()
         ok, m = self_update()
         self._msg(m, "ok" if ok else "error")
+
+    def _center_box(self, title, body, footer=""):
+        """Draw a centered, bordered modal box. `title` and `footer` are centered
+        and emphasised; `body` lines are drawn left-aligned inside the border. The
+        caller runs its own getch loop after this returns."""
+        c = self.curses
+        rows = [("title", title), ("blank", "")]
+        rows += [("body", ln) for ln in body]
+        if footer:
+            rows += [("blank", ""), ("footer", footer)]
+        self.scr.erase()
+        h, w = self.dims()
+        inner = min(max(len(t) for _, t in rows) + 4, max(20, w - 4))
+        box_w, box_h = inner + 2, len(rows) + 2
+        y0 = max(0, (h - box_h) // 2)
+        x0 = max(0, (w - box_w) // 2)
+        border = c.color_pair(8) | c.A_BOLD
+        self.safe(y0, x0, "┌" + "─" * inner + "┐", border)
+        for i, (kind, text) in enumerate(rows):
+            y = y0 + 1 + i
+            if kind == "title":
+                cell, attr = text.center(inner), c.color_pair(8) | c.A_BOLD
+            elif kind == "footer":
+                cell, attr = text.center(inner), c.color_pair(5) | c.A_BOLD
+            else:
+                cell, attr = " " + text.ljust(inner - 1), c.color_pair(4)
+            self.safe(y, x0, "│", border)
+            self.safe(y, x0 + 1, cell[:inner], attr)
+            self.safe(y, x0 + inner + 1, "│", border)
+        self.safe(y0 + box_h - 1, x0, "└" + "─" * inner + "┘", border)
+        self.scr.refresh()
+
+    def _launch_update_prompt(self):
+        """Centered prompt shown once at launch when a newer release is out.
+        Offers to update in place now, or skip straight into the configurator."""
+        info = self._update_info
+        if not (info and info.get("outdated")):
+            return
+        body = [
+            "A new version of SpookiUI is available.",
+            "",
+            f"  installed    v{__version__}",
+            f"  available    {info['latest']}",
+            "",
+            "A backup of the current version is kept when you update.",
+        ]
+        self._center_box(" SpookiUI update ", body,
+                         footer="u  update now      s / Enter  skip")
+        while True:
+            ch = self.scr.getch()
+            if ch in (ord("u"), ord("U")):
+                self._launch_do_update()
+                return
+            if ch in (ord("s"), ord("S"), ord("q"), 10, 13, 27):
+                return
+
+    def _launch_do_update(self):
+        """Run the in-place update from the launch prompt, reporting the outcome
+        in the same centered box, then continue into the UI on any key."""
+        import textwrap
+        info = self._update_info
+        self._center_box(" SpookiUI update ", [f"Updating to {info['latest']}…"])
+        ok, m = self_update()
+        body: list[str] = []
+        for para in m.splitlines():
+            body.extend(textwrap.wrap(para, 56) or [""])
+        self._center_box(" update complete " if ok else " update failed ",
+                         body, footer="press any key to continue")
+        self.scr.getch()
+        if ok:
+            self._msg(m.splitlines()[0], "ok")
 
     def _edit_bool(self, opt: Option):
         cur = self.sess.effective(opt.name)
@@ -3726,7 +3964,9 @@ class App:
         while True:
             self.scr.erase()
             h, w = self.dims()
-            self.safe(0, 0, " treats · fun background shaders ".ljust(w),
+            vib = int(round(get_treat_vibrancy() * 100))
+            self.safe(0, 0,
+                      f" treats · fun background shaders · vibrancy {vib}% ".ljust(w),
                       c.color_pair(1) | c.A_BOLD)
             active = set(enabled_treat_slugs(self.sess))
             list_w = 24
@@ -3772,12 +4012,16 @@ class App:
                           c.color_pair({"ok": 6, "error": 7, "warn": 8}.get(
                               note_kind, 2)) | c.A_BOLD)
             self.safe(h - 1, 0,
-                      " ↑↓ move · Space/Enter toggle · Esc close ".ljust(w),
+                      " ↑↓ move · Space/Enter toggle · v vibrancy · Esc close ".ljust(w),
                       c.color_pair(1))
             self.scr.refresh()
             ch = self.scr.getch()
             if ch in (27,):
                 return
+            if ch in (ord("v"), ord("V")):
+                note = self._treat_vibrancy_slider()
+                note_kind = "ok"
+                continue
             if ch in (c.KEY_UP, ord("k")):
                 sel = max(0, sel - 1); note = ""
             elif ch in (c.KEY_DOWN, ord("j")):
@@ -3798,6 +4042,79 @@ class App:
                 else:
                     note = "failed: " + (errs[0] if errs else "?")
                     note_kind = "error"
+
+    def _treat_vibrancy_slider(self) -> str:
+        """Slider (0–100%, steps of 5) for how strongly treats show. Previews live
+        by re-baking the active treat and reloading; Esc restores the starting
+        value. Returns a status note for the treats overlay. If no treat is active
+        it still saves the preference (nothing to preview)."""
+        c = self.curses
+        step = 5
+        start = int(round(get_treat_vibrancy() * 100 / step)) * step
+        pct = start
+        active = bool(enabled_treat_slugs(self.sess))
+
+        def apply(p):
+            set_treat_vibrancy(self.sess, p)
+
+        pending = True
+        while True:
+            self.scr.erase()
+            h, w = self.dims()
+            self.safe(0, 0, " treats · vibrancy ".ljust(w), c.color_pair(1) | c.A_BOLD)
+            self.safe(2, 2, "How strongly the active treat's animation shows.",
+                      c.color_pair(4))
+            self.safe(3, 2, "100% = the tuned look treats ship with; 0% = invisible.",
+                      c.color_pair(4))
+            if not active:
+                self.safe(4, 2, "(no treat active — this sets the preference for next time)",
+                          c.color_pair(8))
+            if pending:
+                apply(pct)
+                pending = False
+            bar_w = max(10, min(48, w - 14))
+            knob = max(0, min(bar_w - 1, int(round(pct / 100 * (bar_w - 1)))))
+            y = max(7, h // 2 - 1)
+            x = max(2, (w - (bar_w + 8)) // 2)
+            self.safe(y, x, "0% ", c.color_pair(4))
+            bx = x + 4
+            self.safe(y, bx, "━" * knob, c.color_pair(5) | c.A_BOLD)
+            self.safe(y, bx + knob, "●", c.color_pair(6) | c.A_BOLD)
+            self.safe(y, bx + knob + 1, "─" * (bar_w - knob - 1), c.color_pair(4))
+            self.safe(y, bx + bar_w + 1, " 100%", c.color_pair(4))
+            vtxt = f"  {pct}%  "
+            self.safe(y + 2, max(2, (w - len(vtxt)) // 2), vtxt,
+                      c.color_pair(10) | c.A_BOLD)
+            self.safe(h - 1, 0,
+                      " ←/→ adjust · PgUp/PgDn ×10 · Home/End min/max · Enter apply · Esc cancel ".ljust(w),
+                      c.color_pair(1))
+            self.scr.refresh()
+            ch = self.scr.getch()
+            if ch in (27,):
+                if start != pct:
+                    apply(start)
+                return "vibrancy unchanged"
+            if ch in (ord("\n"), c.KEY_ENTER, 10, 13):
+                apply(pct)
+                self._msg(f"vibrancy {pct}%", "ok")
+                return f"vibrancy {pct}%"
+            new = pct
+            if ch in (c.KEY_LEFT, c.KEY_DOWN, ord("-"), ord("_"), ord("h"), ord("j")):
+                new = pct - step
+            elif ch in (c.KEY_RIGHT, c.KEY_UP, ord("+"), ord("="), ord("l"), ord("k")):
+                new = pct + step
+            elif ch in (c.KEY_NPAGE,):
+                new = pct - 10
+            elif ch in (c.KEY_PPAGE,):
+                new = pct + 10
+            elif ch in (c.KEY_HOME,):
+                new = 0
+            elif ch in (c.KEY_END,):
+                new = 100
+            new = max(0, min(100, new))
+            if new != pct:
+                pct = new
+                pending = True
 
     def _help(self):
         c = self.curses
@@ -3838,7 +4155,7 @@ class App:
             "  p   profiles — save / load / delete named configs, light↔dark",
             "  c   config check — health-check for issues (doctor)",
             "  v   utils — one-shot fixes (e.g. Fix SSH for garbled remote shells)",
-            "  t   treats — toggle fun background shaders (stars, matrix, pipes)",
+            "  t   treats — toggle fun background shaders; v inside sets vibrancy",
             "  d   show what you've changed",
             "  q   quit",
             "",
@@ -4093,12 +4410,31 @@ def cli_treats(sess: Session, args) -> int:
     active = enabled_treat_slugs(sess)
 
     if action == "list":
+        print(f"vibrancy: {int(round(get_treat_vibrancy() * 100))}%")
         for t in TREATS:
             box = "[x]" if t.slug in active else "[ ]"
             print(f"{box} {t.slug:12} {t.desc}")
         return 0
 
     slugs = list(getattr(args, "name", None) or [])
+
+    if action == "vibrancy":
+        if not slugs:
+            print(f"{int(round(get_treat_vibrancy() * 100))}%")
+            return 0
+        try:
+            pct = int(slugs[0])
+        except ValueError:
+            print(f"vibrancy must be a whole number 0–100, got '{slugs[0]}'",
+                  file=sys.stderr)
+            return 2
+        if not 0 <= pct <= 100:
+            print(f"vibrancy must be between 0 and 100, got {pct}", file=sys.stderr)
+            return 2
+        ok, m = set_treat_vibrancy(sess, pct)
+        print(m, file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 1
+
     if action == "clear":
         target: list[str] = []
     else:
@@ -4204,9 +4540,12 @@ def build_parser() -> argparse.ArgumentParser:
         "treats",
         help="toggle fun background shaders (stars, matrix, pipes); all off by default")
     sp.add_argument("action", nargs="?", default="list",
-                    choices=["list", "enable", "disable", "only", "clear"],
-                    help="list (default), enable/disable/only <name…>, or clear")
-    sp.add_argument("name", nargs="*", help="treat slug(s) for enable/disable/only")
+                    choices=["list", "enable", "disable", "only", "clear", "vibrancy"],
+                    help="list (default), enable/disable/only <name…>, clear, "
+                         "or vibrancy [0-100]")
+    sp.add_argument("name", nargs="*",
+                    help="treat slug(s) for enable/disable/only, or a 0–100 "
+                         "percentage for vibrancy")
     sp.set_defaults(func=cli_treats)
     return p
 

@@ -263,16 +263,31 @@ Current treats:
 - **Mystify** — bouncing, colour-trailing polygons (the Windows Mystify saver)
 - **Plasma** — a rolling demoscene / After Dark plasma field
 - **Lava Lamp** — slow rising metaball blobs (a 70s lava lamp / Bubbles saver)
+- **Fireworks** — rockets bursting into fading, gravity-pulled sparks
+- **Chomper** — a chomping wedge eats a row of pellets, chased by a ghost (a nod
+  to the 1980 maze arcade classic)
+- **Barrels** — barrels tumble down slanted girders (a wink at the 1981 platform
+  arcade classic)
+- **Jumper** — a hero hops beneath scrolling question-blocks (a nostalgic nod to
+  side-scrolling platformers)
+
+The game-inspired treats (Chomper / Barrels / Jumper) are drawn from plain
+shapes only — they evoke the vibe of those classics without using any game
+artwork, in the same "homage" spirit as the Pipes and Mystify treats.
 
 They're designed to stay out of your way:
 
 - **All off by default** — nothing is enabled unless you ask.
+- **One at a time** — only a single treat can be active; enabling one turns off
+  whichever was on, so background effects never stack.
 - **Text stays legible** — every treat composites *additively* through a tight
   luminance mask, so only the darkest background pixels are tinted; your text,
   cursor, and borders are left alone. Brightness is kept deliberately low.
-- **Light on resources** — SpookiUI sets `custom-shader-animation = true` (animate
-  on focus/activity) rather than `always`, so an idle, unfocused window isn't
-  burning the GPU, and each shader uses only small, fixed per-frame work.
+- **Light on resources** — SpookiUI sets `custom-shader-animation = true`, which
+  animates only the *focused* window. Open (and focus) another terminal and the
+  treat pauses in the ones you're no longer looking at, so at most one window is
+  ever animating. Each treat is also deliberately cheap — one texture fetch and
+  small, fixed per-frame work.
 - **Non-destructive** — treats are namespaced under `shaders/spookiui/`, so any
   `custom-shader` you added yourself is preserved, and toggling follows the same
   validate → back up → write → reload → rollback discipline as every other edit.
@@ -280,11 +295,11 @@ They're designed to stay out of your way:
 Toggle them in the TUI (`Space`/`Enter`), or from the CLI:
 
 ```bash
-./spookiui.py treats list                 # show treats and which are on
-./spookiui.py treats enable matrix-rain    # turn one (or more) on
-./spookiui.py treats disable pipes         # turn one (or more) off
-./spookiui.py treats only plasma           # enable exactly these, disable the rest
-./spookiui.py treats clear                 # turn all treats off
+./spookiui.py treats list                 # show treats and which one is on
+./spookiui.py treats enable matrix-rain    # make this the active treat (replaces any other)
+./spookiui.py treats disable pipes         # turn the active treat off
+./spookiui.py treats only plasma           # same as enable — one treat at a time
+./spookiui.py treats clear                 # turn the treat off
 ```
 
 ## Scriptable CLI

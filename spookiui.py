@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -474,9 +474,10 @@ CATEGORY_ORDER = [
 UTILS_CATEGORY = "⚙ Utils"
 
 # Another synthetic category: "Treats" are fun, purely-cosmetic animated
-# background shaders (a starfield, a Matrix rain, neon pipes) that SpookiUI
-# bundles and toggles via Ghostty's `custom-shader`. All default OFF. Opening
-# it (Enter/→) launches the Treats overlay. See the TREATS registry below.
+# background shaders (a Matrix rain, neon pipes, fireworks) that SpookiUI
+# bundles and toggles via Ghostty's `custom-shader`. All default OFF, and only
+# one runs at a time. Opening it (Enter/→) launches the Treats overlay. See the
+# TREATS registry below.
 TREATS_CATEGORY = "🍬 Treats"
 
 # Nerd Font glyphs shown beside each root category when a Nerd Font is in use
@@ -1537,9 +1538,10 @@ def apply_ssh_fix() -> tuple[bool, str]:
 # Ghostty can run a "custom shader" behind the terminal grid: a ShaderToy-style
 # GLSL fragment shader (`void mainImage(out vec4, in vec2)`) with `iResolution`,
 # `iTime`, and `iChannel0` (the rendered terminal) available. `custom-shader` is
-# a list, so several can be layered; `custom-shader-animation = always` keeps
-# them moving. A "treat" is one of these shaders that SpookiUI bundles, writes
-# to `<ghostty-config-dir>/shaders/spookiui/<slug>.glsl`, and toggles for you.
+# a list, so several can be layered, but SpookiUI keeps at most ONE treat active
+# at a time. `custom-shader-animation = true` animates only the focused window.
+# A "treat" is one of these shaders that SpookiUI bundles, writes to
+# `<ghostty-config-dir>/shaders/spookiui/<slug>.glsl`, and toggles for you.
 #
 # Every treat composites *additively* over the terminal and only brightens the
 # darkest background pixels (a tight luminance mask), so the effect fades into the
@@ -1785,6 +1787,187 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 """
 
+_GLSL_FIREWORKS = """\
+// SpookiUI treat: Fireworks.
+// Rockets burst into fading, gravity-pulled sparks. Original SpookiUI shader;
+// the sparks are added over dark background pixels only.
+
+float h(float n) { return fract(sin(n) * 43758.5453); }
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+    vec2 p = vec2(uv.x * aspect, uv.y);
+
+    vec3 acc = vec3(0.0);
+    const int BURSTS = 4;
+    const int SPARKS = 14;
+    for (int b = 0; b < BURSTS; b++) {
+        float fb = float(b);
+        float period = 2.5 + h(fb) * 1.5;
+        float t = mod(iTime + fb * 1.7, period) / period;       // 0..1 burst life
+        vec2 centre = vec2(h(fb * 3.1) * aspect, 0.35 + 0.4 * h(fb * 5.3));
+        vec3 col = 0.5 + 0.5 * cos(6.2831 * (h(fb * 7.7) + vec3(0.0, 0.33, 0.67)));
+        for (int s = 0; s < SPARKS; s++) {
+            float fs = float(s);
+            float ang = 6.2831 * (fs / float(SPARKS)) + h(fb + fs);
+            float sp = 0.18 * (0.6 + 0.4 * h(fb * 2.0 + fs));
+            vec2 pos = centre + vec2(cos(ang), sin(ang)) * sp * t;
+            pos.y -= 0.15 * t * t;                               // gravity droop
+            float fade = 1.0 - t;
+            acc += col * (1.0 - smoothstep(0.002, 0.010, length(p - pos)))
+                       * fade * fade;
+        }
+    }
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    vec3 res = term.rgb + acc * 0.6 * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+_GLSL_CHOMPER = """\
+// SpookiUI treat: Chomper.
+// A yellow chomping wedge munches a row of pellets while a ghost gives chase — a
+// fond wink at the 1980 maze arcade classic. Original SpookiUI shader: plain
+// shapes, no game artwork. Drawn over dark background pixels only.
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+    vec2 p = vec2(uv.x * aspect, uv.y);
+
+    float row = 0.5;
+    float r = 0.05;
+    float loop = aspect + 0.4;
+    float px = mod(iTime * 0.22, loop) - 0.2;          // chomper enters from left
+    vec3 acc = vec3(0.0);
+
+    // Pellets: evenly spaced dots, eaten once the chomper has passed them.
+    float spacing = 0.14;
+    float gx = floor(p.x / spacing) * spacing + spacing * 0.5;
+    if (gx > px + r) {
+        acc += vec3(1.0, 0.85, 0.55)
+             * (1.0 - smoothstep(0.010, 0.016, length(p - vec2(gx, row))));
+    }
+
+    // Chomper: a disc with an opening/closing mouth wedge facing right.
+    vec2 rel = p - vec2(px, row);
+    float dc = length(rel);
+    float mouth = 0.62 * (0.5 + 0.5 * sin(iTime * 10.0));   // half-angle of the gap
+    float body = (dc < r && abs(atan(rel.y, rel.x)) > mouth) ? 1.0 : 0.0;
+    body *= smoothstep(r, r - 0.006, dc);
+    acc += vec3(1.0, 0.92, 0.15) * body;
+
+    // Ghost: a bobbing disc trailing behind, with two eyes.
+    vec2 gr = p - vec2(px - 0.16, row + 0.012 * sin(iTime * 6.0));
+    float ghost = 1.0 - smoothstep(r - 0.006, r, length(gr));
+    acc += vec3(1.0, 0.4, 0.7) * ghost * 0.8;
+    float eyes = max(1.0 - smoothstep(0.006, 0.010, length(gr - vec2(-0.012, 0.010))),
+                     1.0 - smoothstep(0.006, 0.010, length(gr - vec2( 0.014, 0.010))));
+    acc = mix(acc, vec3(0.05, 0.05, 0.2), eyes * ghost);   // eye holes in the ghost
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    vec3 res = term.rgb + acc * 0.7 * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+_GLSL_BARRELS = """\
+// SpookiUI treat: Barrels.
+// Barrels tumble down slanted girders — a wink at the 1981 platform arcade
+// classic. Original SpookiUI shader: plain shapes, no game artwork. Drawn over
+// dark background pixels only.
+
+float h(float n) { return fract(sin(n) * 43758.5453); }
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+    vec2 p = vec2(uv.x * aspect, uv.y);
+
+    vec3 acc = vec3(0.0);
+    const int LEVELS = 4;
+    float slope = 0.06;
+
+    // Girders: tilted bands, alternating slope direction on each level.
+    for (int i = 0; i < LEVELS; i++) {
+        float fi = float(i);
+        float dir = (mod(fi, 2.0) < 1.0) ? 1.0 : -1.0;
+        float gy = 0.12 + 0.24 * fi + slope * dir * (p.x / aspect);
+        acc += vec3(0.9, 0.3, 0.25)
+             * (1.0 - smoothstep(0.006, 0.014, abs(p.y - gy))) * 0.5;
+    }
+
+    // Barrels: roll along a level, then drop to the next, staggered in time.
+    const int BARRELS = 5;
+    for (int b = 0; b < BARRELS; b++) {
+        float fb = float(b);
+        float lvlF = fract(iTime * 0.12 + h(fb * 3.0)) * float(LEVELS - 1);
+        float lvl = floor(lvlF);
+        float frac = fract(lvlF);
+        float dir = (mod(lvl, 2.0) < 1.0) ? 1.0 : -1.0;
+        float x = ((dir > 0.0) ? frac : 1.0 - frac) * aspect;
+        float y = 0.12 + 0.24 * lvl + slope * dir * (x / aspect) + 0.03;
+        vec2 bp = p - vec2(x, y);
+        float barrel = 1.0 - smoothstep(0.022, 0.028, length(bp));
+        float roll = 0.5 + 0.5 * sin(atan(bp.y, bp.x) * 3.0 + iTime * 8.0 * dir);
+        acc += mix(vec3(0.8, 0.55, 0.2), vec3(0.5, 0.3, 0.1), roll) * barrel;
+    }
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    vec3 res = term.rgb + acc * 0.6 * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+_GLSL_JUMPER = """\
+// SpookiUI treat: Jumper.
+// A little hero hops along the ground beneath a row of scrolling question-blocks
+// — a nostalgic nod to side-scrolling platformers. Original SpookiUI shader:
+// plain shapes, no game artwork. Drawn over dark background pixels only.
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+    vec2 p = vec2(uv.x * aspect, uv.y);
+
+    vec3 acc = vec3(0.0);
+    float ground = 0.22;
+    acc += vec3(0.4, 0.25, 0.15)
+         * (1.0 - smoothstep(0.004, 0.012, abs(p.y - ground)));
+
+    // Question-blocks: a scrolling row floating above the ground.
+    float bspace = 0.30;
+    float scroll = mod(iTime * 0.15, bspace);
+    float bx = floor((p.x + scroll) / bspace) * bspace - scroll + bspace * 0.5;
+    vec2 bc = p - vec2(bx, 0.5);
+    float block = step(abs(bc.x), 0.035) * step(abs(bc.y), 0.035);
+    acc += vec3(0.95, 0.7, 0.1) * block * 0.8;
+    acc += vec3(0.1) * (1.0 - smoothstep(0.006, 0.010, length(bc))) * block;
+
+    // Hero: bounces in parabolic hops at a fixed screen position.
+    float hopT = fract(iTime * 0.5);
+    float hop = 4.0 * hopT * (1.0 - hopT) * 0.14;      // parabola
+    vec2 hp = p - vec2(0.35 * aspect, ground + 0.03 + hop);
+    acc += vec3(0.9, 0.2, 0.15) * step(abs(hp.x), 0.024) * step(abs(hp.y), 0.030);
+    acc += vec3(0.95, 0.8, 0.6)
+         * (1.0 - smoothstep(0.016, 0.020, length(hp - vec2(0.0, 0.036))));   // head
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    vec3 res = term.rgb + acc * 0.6 * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
 
 @dataclass
 class Treat:
@@ -1817,6 +2000,25 @@ TREATS: list[Treat] = [
           "Slow rising metaball blobs — a 70s lava lamp / Bubbles saver.",
           _GLSL_BUBBLES,
           "Soft merging blobs drift upward and wrap around."),
+    Treat("fireworks", "Fireworks",
+          "Rockets bursting into fading, gravity-pulled sparks.",
+          _GLSL_FIREWORKS,
+          "A few staggered bursts drift down and dim out."),
+    Treat("chomper", "Chomper",
+          "A chomping wedge eats a row of pellets, chased by a ghost.",
+          _GLSL_CHOMPER,
+          "A fond nod to the 1980 maze arcade classic — plain shapes, no game "
+          "artwork."),
+    Treat("barrels", "Barrels",
+          "Barrels tumble down slanted girders.",
+          _GLSL_BARRELS,
+          "A wink at the 1981 platform arcade classic — plain shapes, no game "
+          "artwork."),
+    Treat("jumper", "Jumper",
+          "A little hero hops beneath scrolling question-blocks.",
+          _GLSL_JUMPER,
+          "A nostalgic nod to side-scrolling platformers — plain shapes, no game "
+          "artwork."),
 ]
 
 TREAT_BY_SLUG: dict[str, Treat] = {t.slug: t for t in TREATS}
@@ -1865,11 +2067,14 @@ def enabled_treat_slugs(sess: "Session") -> list[str]:
 
 
 def apply_treat_lines(sess: "Session", slugs) -> None:
-    """Mutate `sess.cfg.lines` so exactly `slugs` treats are active. Writes the
-    GLSL files (harmless — not config) and rewrites `custom-shader` +
-    `custom-shader-animation`, preserving any `custom-shader` entries you added
-    yourself. Does NOT validate/write/reload — callers do that (rollback-safe)."""
-    want = [t for t in TREATS if t.slug in set(slugs)]
+    """Mutate `sess.cfg.lines` so at most ONE treat is active. Only one treat may
+    run at a time; if `slugs` names several, the first real one wins (pass `[]` to
+    turn treats off). Writes the GLSL files (harmless — not config) and rewrites
+    `custom-shader` + `custom-shader-animation`, preserving any `custom-shader`
+    entries you added yourself. Does NOT validate/write/reload — callers do that
+    (rollback-safe)."""
+    chosen = next((s for s in slugs if s in TREAT_BY_SLUG), None)
+    want = [TREAT_BY_SLUG[chosen]] if chosen else []
     for t in want:
         write_treat_shader(t)
     foreign = [v for v in sess.cfg.get_values("custom-shader")
@@ -1880,10 +2085,11 @@ def apply_treat_lines(sess: "Session", slugs) -> None:
     else:
         sess.cfg.unset("custom-shader")
     if want:
-        # Our treats are animated, but keep the render loop tied to focus/activity
-        # (`true`) rather than running unconditionally (`always`) — `always` keeps
-        # the GPU busy even on an idle, unfocused window, which is the main source
-        # of the "too much resource usage" people notice.
+        # `true` animates only the focused/active window; unfocused ones pause. So
+        # opening (and focusing) a new terminal freezes the treat in the others —
+        # only one window animates at a time, which also keeps the GPU idle on the
+        # windows you're not looking at. (`always` would animate every window at
+        # once.) Combined with the single-treat rule, at most one shader ever runs.
         sess.cfg.set_scalar("custom-shader-animation", "true")
     elif not new_list:
         sess.cfg.unset("custom-shader-animation")
@@ -3573,10 +3779,12 @@ class App:
                 sel = min(len(TREATS) - 1, sel + 1); note = ""
             elif ch in (ord(" "), ord("\n"), c.KEY_ENTER, 10, 13):
                 t = TREATS[sel]
-                want = set(enabled_treat_slugs(self.sess))
-                turning_on = t.slug not in want
-                want.symmetric_difference_update({t.slug})
-                ok, errs = self._commit_treats(sorted(want))
+                active_now = enabled_treat_slugs(self.sess)
+                turning_on = t.slug not in active_now
+                # Only one treat at a time: turning one on replaces any other;
+                # toggling the active one off leaves none.
+                want = [t.slug] if turning_on else []
+                ok, errs = self._commit_treats(want)
                 if ok:
                     tag = "live" if self.sess.auto_apply else "staged"
                     note = f"{t.name} {'ON' if turning_on else 'off'} ({tag})"
@@ -3898,13 +4106,14 @@ def cli_treats(sess: Session, args) -> int:
             print(f"'{action}' needs at least one treat name "
                   f"(one of: {', '.join(t.slug for t in TREATS)})", file=sys.stderr)
             return 2
-        if action == "enable":
-            target = [t.slug for t in TREATS
-                      if t.slug in active or t.slug in slugs]
-        elif action == "disable":
+        if action in ("enable", "only"):
+            # Only one treat runs at a time, so enabling one replaces any other.
+            if len(slugs) > 1:
+                print(f"only one treat can be active at a time; using '{slugs[0]}'",
+                      file=sys.stderr)
+            target = [slugs[0]]
+        else:  # "disable"
             target = [s for s in active if s not in slugs]
-        else:  # "only"
-            target = [t.slug for t in TREATS if t.slug in slugs]
 
     ok, m = set_treats(sess, target)
     now = enabled_treat_slugs(sess) if ok else active

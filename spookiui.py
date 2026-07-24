@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.9.0"
+__version__ = "1.9.1"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -1913,7 +1913,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         float frac = fract(lvlF);
         float dir = (mod(lvl, 2.0) < 1.0) ? 1.0 : -1.0;
         float x = ((dir > 0.0) ? frac : 1.0 - frac) * aspect;
-        float y = 0.12 + 0.24 * lvl + slope * dir * (x / aspect) + 0.03;
+        // Sit on TOP of the girder. Screen y grows downward, so "above the
+        // slope" is a smaller y — subtract the offset.
+        float y = 0.12 + 0.24 * lvl + slope * dir * (x / aspect) - 0.03;
         vec2 bp = p - vec2(x, y);
         float barrel = 1.0 - smoothstep(0.022, 0.028, length(bp));
         float roll = 0.5 + 0.5 * sin(atan(bp.y, bp.x) * 3.0 + iTime * 8.0 * dir);
@@ -1940,7 +1942,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     vec2 p = vec2(uv.x * aspect, uv.y);
 
     vec3 acc = vec3(0.0);
-    float ground = 0.22;
+    // Screen y grows downward, so the ground sits near the bottom (large y) and
+    // the block row above it is at a smaller y.
+    float ground = 0.82;
     acc += vec3(0.4, 0.25, 0.15)
          * (1.0 - smoothstep(0.004, 0.012, abs(p.y - ground)));
 
@@ -1953,13 +1957,14 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     acc += vec3(0.95, 0.7, 0.1) * block * 0.8;
     acc += vec3(0.1) * (1.0 - smoothstep(0.006, 0.010, length(bc))) * block;
 
-    // Hero: bounces in parabolic hops at a fixed screen position.
+    // Hero: bounces in parabolic hops on the ground, staying below the blocks.
+    // "Up" is toward a smaller y, so the hop and the head both subtract.
     float hopT = fract(iTime * 0.5);
     float hop = 4.0 * hopT * (1.0 - hopT) * 0.14;      // parabola
-    vec2 hp = p - vec2(0.35 * aspect, ground + 0.03 + hop);
+    vec2 hp = p - vec2(0.35 * aspect, ground - 0.05 - hop);
     acc += vec3(0.9, 0.2, 0.15) * step(abs(hp.x), 0.024) * step(abs(hp.y), 0.030);
     acc += vec3(0.95, 0.8, 0.6)
-         * (1.0 - smoothstep(0.016, 0.020, length(hp - vec2(0.0, 0.036))));   // head
+         * (1.0 - smoothstep(0.016, 0.020, length(hp - vec2(0.0, -0.036))));   // head
 
     float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
     float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);

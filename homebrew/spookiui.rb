@@ -14,8 +14,8 @@
 class Spookiui < Formula
   desc "Live configurator TUI for the Ghostty terminal"
   homepage "https://github.com/mattj85/SpookiUI"
-  url "https://github.com/mattj85/SpookiUI/archive/refs/tags/v1.10.1.tar.gz"
-  sha256 "3a1eabb6d7100475955106805afb97a2e9c36adee1fbc4023b24fd4de70ff5d7"
+  url "https://github.com/mattj85/SpookiUI/archive/refs/tags/v1.10.2.tar.gz"
+  sha256 "2c026ec84182a2dd24e8754cd3b86b4b496d1dbe533d82189fd9a727f2879391"
   license "MIT"
   head "https://github.com/mattj85/SpookiUI.git", branch: "main"
 

@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.11.0"
+__version__ = "1.11.1"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -2545,14 +2545,19 @@ def apply_treat_lines(sess: "Session", slugs) -> None:
     else:
         sess.cfg.unset("custom-shader")
     if chosen or dim_only:
-        # `true` animates only the focused/active window; unfocused ones pause. So
-        # opening (and focusing) a new terminal freezes the treat in the others —
-        # only one window animates at a time, which also keeps the GPU idle on the
-        # windows you're not looking at. (`always` would animate every window at
-        # once.) Combined with the single-treat rule, at most one shader ever runs.
-        # The dim-only shader uses it too: a focus change redraws the surface (so
-        # `iFocus` updates and dimming applies), and its no-op body is ~free.
-        sess.cfg.set_scalar("custom-shader-animation", "true")
+        # The dim-unfocused effect lives in the shader's `iFocus < 0.5` branch,
+        # which only fires while a surface keeps re-rendering. Per Ghostty's docs,
+        # `custom-shader-animation = true` runs the animation loop *only for the
+        # focused surface* — an unfocused window stops re-rendering and freezes on
+        # its last mid-animation frame, so the shader never re-evaluates with
+        # `iFocus = 0` and the window never dims. `always` keeps every surface
+        # re-rendering, so unfocused windows actually dim (the shader hides the
+        # treat there and paints the dimmed terminal instead). We only pay that
+        # per-surface cost when dimming is in play; with dim off (or no `iFocus`
+        # support) `true` animates just the focused window and leaves the rest idle.
+        want_dim = SUPPORTS_SHADER_FOCUS and get_dim_unfocused()
+        sess.cfg.set_scalar("custom-shader-animation",
+                            "always" if want_dim else "true")
     elif not new_list:
         sess.cfg.unset("custom-shader-animation")
     # else: only your own shaders remain — leave custom-shader-animation alone.

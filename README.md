@@ -1,5 +1,7 @@
 # SpookiUI
 
+**🌐 Website: [spookiui.rooksnet.uk](https://spookiui.rooksnet.uk/)**
+
 A **live configurator for the [Ghostty](https://ghostty.org) terminal**. Browse
 and edit *every* option Ghostty supports from an interactive terminal UI, and
 watch your changes apply **live** — when you run it inside a Ghostty window, the

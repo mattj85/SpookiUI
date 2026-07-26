@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.12.1"
+__version__ = "1.13.0"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -1802,7 +1802,23 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 """
 
-_GLSL_CHOMPER = """\
+_GLSL_GHOST_SPRITE = """\
+// Shared SpookiUI ghost sprite — the SAME look used by the Ghosts treat and by
+// the Chomper treat's chaser: a rounded dome with straight sides, a wavy skirt
+// hem, and two eye holes. `p` is ghost-local and aspect-corrected (p.y < 0 is
+// up); `r` is the radius; `wob` drives the skirt's waver. Returns coverage 0..1.
+float ghost_body(vec2 p, float r, float wob) {
+    float dome = (p.y < 0.0) ? length(p) : abs(p.x);            // rounded top, straight sides
+    float hem = 1.05 * r + 0.10 * r * sin(p.x / r * 8.0 + wob); // wavy skirt
+    float shape = step(dome, r) * step(p.y, hem);
+    float eyes = smoothstep(0.28 * r, 0.14 * r, length(p - vec2(-0.34 * r, -0.18 * r)))
+               + smoothstep(0.28 * r, 0.14 * r, length(p - vec2( 0.34 * r, -0.18 * r)));
+    return clamp(shape - eyes, 0.0, 1.0);
+}
+
+"""
+
+_GLSL_CHOMPER = _GLSL_GHOST_SPRITE + """\
 // SpookiUI treat: Chomper.
 // A yellow chomping wedge munches a row of pellets while a ghost gives chase — a
 // fond wink at the 1980 maze arcade classic. Original SpookiUI shader: plain
@@ -1836,13 +1852,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     body *= smoothstep(r, r - 0.006, dc);
     acc += vec3(1.0, 0.92, 0.15) * body;
 
-    // Ghost: a bobbing disc trailing behind, with two eyes.
+    // Ghost chasing behind — the same sprite as the Ghosts treat (rounded
+    // dome, wavy skirt, two eye holes), bobbing as it trails the chomper.
     vec2 gr = p - vec2(px - 0.16, row + 0.012 * sin(iTime * 6.0));
-    float ghost = 1.0 - smoothstep(r - 0.006, r, length(gr));
-    acc += vec3(1.0, 0.4, 0.7) * ghost * 0.8;
-    float eyes = max(1.0 - smoothstep(0.006, 0.010, length(gr - vec2(-0.012, 0.010))),
-                     1.0 - smoothstep(0.006, 0.010, length(gr - vec2( 0.014, 0.010))));
-    acc = mix(acc, vec3(0.05, 0.05, 0.2), eyes * ghost);   // eye holes in the ghost
+    float ghost = ghost_body(gr, r, iTime * 3.0);
+    acc += vec3(0.72, 0.80, 1.0) * ghost;
 
     float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
     float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
@@ -1905,9 +1919,83 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
 _GLSL_JUMPER = """\
 // SpookiUI treat: Jumper.
-// A little hero hops along the ground beneath a row of scrolling question-blocks
-// — a nostalgic nod to side-scrolling platformers. Original SpookiUI shader:
-// plain shapes, no game artwork. Drawn over dark background pixels only.
+// A little red-capped, mustachioed hero hops along the ground beneath a row of
+// scrolling question-blocks — styled after the 8-bit NES plumber. The sprite is
+// snapped to a coarse pixel grid with hard edges for a chunky pixel-art look.
+// Original SpookiUI shader: hand-built shapes, no game artwork. Drawn over dark
+// background pixels only.
+
+// Hard-edged solid primitives (coverage 0 or 1); coords are snapped to a coarse
+// sprite-pixel grid before evaluation so the hero reads as chunky NES pixels.
+float jb_box(vec2 p, vec2 b) {
+    vec2 d = abs(p) - b;
+    return step(max(d.x, d.y), 0.0);
+}
+float jb_disc(vec2 p, float r) {
+    return step(dot(p, p), r * r);
+}
+void jb_lay(float m, vec3 c, inout vec3 col, inout float a) {
+    m = clamp(m, 0.0, 1.0);
+    col = mix(col, c, m);
+    a = max(a, m);
+}
+
+// Paint the NES-plumber hero into (col,a). q is aspect-corrected and local to
+// the hero: q.y points up, with the feet resting at q.y == 0.
+void mario_draw(vec2 q, out vec3 col, out float a) {
+    const vec3 RED   = vec3(0.86, 0.12, 0.10);   // cap + shirt
+    const vec3 SKIN  = vec3(1.00, 0.74, 0.52);   // face + nose
+    const vec3 BROWN = vec3(0.40, 0.22, 0.08);   // hair, mustache, boots
+    const vec3 OVER  = vec3(0.18, 0.30, 0.90);   // blue overalls
+    const vec3 BTN   = vec3(0.95, 0.85, 0.20);   // overall buttons
+    const float PIX  = 0.0052;                   // sprite-pixel grid
+    q = floor(q / PIX) * PIX + 0.5 * PIX;        // snap to the pixel grid
+    col = vec3(0.0); a = 0.0;
+
+    // Boots (front foot stepped forward).
+    jb_lay(jb_box(q - vec2(-0.010, 0.006), vec2(0.011, 0.006)), BROWN, col, a);
+    jb_lay(jb_box(q - vec2( 0.014, 0.006), vec2(0.011, 0.006)), BROWN, col, a);
+    // Blue overalls: legs + torso.
+    jb_lay(jb_box(q - vec2(0.002, 0.028), vec2(0.020, 0.017)), OVER, col, a);
+    // Red shirt: shoulders + arms, a touch wider than the overalls.
+    jb_lay(jb_box(q - vec2(0.002, 0.052), vec2(0.024, 0.009)), RED, col, a);
+    // Overalls bib over the chest, with two buttons.
+    jb_lay(jb_box(q - vec2(0.002, 0.050), vec2(0.012, 0.011)), OVER, col, a);
+    jb_lay(jb_disc(q - vec2(-0.007, 0.048), 0.0034), BTN, col, a);
+    jb_lay(jb_disc(q - vec2( 0.011, 0.048), 0.0034), BTN, col, a);
+    // Face.
+    jb_lay(jb_box(q - vec2(0.004, 0.070), vec2(0.018, 0.013)), SKIN, col, a);
+    // Hair/sideburn at the back; mustache and nose at the front.
+    jb_lay(jb_box(q - vec2(-0.016, 0.068), vec2(0.006, 0.011)), BROWN, col, a);
+    jb_lay(jb_box(q - vec2( 0.010, 0.062), vec2(0.012, 0.004)), BROWN, col, a);
+    jb_lay(jb_box(q - vec2( 0.020, 0.066), vec2(0.005, 0.005)), SKIN, col, a);
+    // Eye.
+    jb_lay(jb_box(q - vec2(0.008, 0.073), vec2(0.003, 0.005)), vec3(0.05, 0.05, 0.08), col, a);
+    // Red cap: crown over the head + a brim jutting out the front.
+    jb_lay(jb_box(q - vec2(0.000, 0.086), vec2(0.019, 0.008)), RED, col, a);
+    jb_lay(jb_box(q - vec2(0.014, 0.080), vec2(0.016, 0.004)), RED, col, a);
+}
+
+// Small hash + a filled-disc primitive for the scenery.
+float hash11(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+float jb_pt(vec2 p, vec2 c, float r) { return step(length(p - c), r); }
+float boxAt(float k) { return step(0.45, hash11(k * 2.3 + 1.7)); }   // ~random blocks
+
+// One pixel of the '?' glyph in block-local screen coords (y grows downward).
+float qbit(vec2 g, float cx, float cy) {
+    const float QC = 0.0052;
+    return jb_box(g - vec2(cx * QC, cy * QC), vec2(QC * 0.5, QC * 0.5));
+}
+float qmark(vec2 g) {
+    float m = 0.0;
+    m = max(m, qbit(g, -1.0, -3.0)); m = max(m, qbit(g, 0.0, -3.0)); m = max(m, qbit(g, 1.0, -3.0));
+    m = max(m, qbit(g, -2.0, -2.0)); m = max(m, qbit(g, 2.0, -2.0));
+    m = max(m, qbit(g,  2.0, -1.0));
+    m = max(m, qbit(g,  1.0,  0.0));
+    m = max(m, qbit(g,  0.0,  1.0));
+    m = max(m, qbit(g,  0.0,  3.0));
+    return m;
+}
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     vec2 uv = fragCoord / iResolution.xy;
@@ -1915,30 +2003,112 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     float aspect = iResolution.x / iResolution.y;
     vec2 p = vec2(uv.x * aspect, uv.y);
 
-    vec3 acc = vec3(0.0);
-    // Screen y grows downward, so the ground sits near the bottom (large y) and
-    // the block row above it is at a smaller y.
     float ground = 0.82;
-    acc += vec3(0.4, 0.25, 0.15)
-         * (1.0 - smoothstep(0.004, 0.012, abs(p.y - ground)));
-
-    // Question-blocks: a scrolling row floating above the ground.
     float bspace = 0.30;
-    float scroll = mod(iTime * 0.15, bspace);
-    float bx = floor((p.x + scroll) / bspace) * bspace - scroll + bspace * 0.5;
-    vec2 bc = p - vec2(bx, 0.5);
-    float block = step(abs(bc.x), 0.035) * step(abs(bc.y), 0.035);
-    acc += vec3(0.95, 0.7, 0.1) * block * 0.8;
-    acc += vec3(0.1) * (1.0 - smoothstep(0.006, 0.010, length(bc))) * block;
+    float v = 0.15;                         // world scroll speed
 
-    // Hero: bounces in parabolic hops on the ground, staying below the blocks.
-    // "Up" is toward a smaller y, so the hop and the head both subtract.
-    float hopT = fract(iTime * 0.5);
-    float hop = 4.0 * hopT * (1.0 - hopT) * 0.14;      // parabola
-    vec2 hp = p - vec2(0.35 * aspect, ground - 0.05 - hop);
-    acc += vec3(0.9, 0.2, 0.15) * step(abs(hp.x), 0.024) * step(abs(hp.y), 0.030);
-    acc += vec3(0.95, 0.8, 0.6)
-         * (1.0 - smoothstep(0.016, 0.020, length(hp - vec2(0.0, -0.036))));   // head
+    vec3 acc = vec3(0.0);                   // scene, composited back-to-front
+
+    // Clouds: white puffs drifting slowly across the sky.
+    for (int i = 0; i < 3; i++) {
+        float fi = float(i);
+        float cx = fract(hash11(fi + 2.0) - iTime * 0.008) * (aspect + 0.4) - 0.2;
+        float cy = 0.15 + 0.10 * hash11(fi * 3.0);
+        vec2 cc = p - vec2(cx, cy);
+        float cl = jb_pt(cc, vec2(0.0, 0.0), 0.045);
+        cl = max(cl, jb_pt(cc, vec2( 0.05, 0.012), 0.034));
+        cl = max(cl, jb_pt(cc, vec2(-0.05, 0.012), 0.030));
+        cl = max(cl, jb_pt(cc, vec2( 0.0,  0.02),  0.040));
+        acc = mix(acc, vec3(0.95, 0.97, 1.0), cl);
+    }
+
+    // Green hills behind (clipped to the surface by the ground band below).
+    for (int i = 0; i < 2; i++) {
+        float fi = float(i);
+        float hx = (0.22 + 0.42 * fi) * aspect;
+        float R = 0.13 + 0.03 * fi;
+        float hd = step(length((p - vec2(hx, ground)) / vec2(1.0, 0.85)), R)
+                 * step(p.y, ground);
+        acc = mix(acc, vec3(0.16, 0.52, 0.16), hd);
+    }
+
+    // Bushes on the ground (three-lobed).
+    for (int i = 0; i < 3; i++) {
+        float fi = float(i);
+        float bxs = fract(hash11(fi * 5.0 + 1.0) - iTime * 0.02) * (aspect + 0.4) - 0.2;
+        vec2 bp = p - vec2(bxs, ground);
+        float bush = jb_pt(bp, vec2(-0.03, 0.0), 0.026);
+        bush = max(bush, jb_pt(bp, vec2(0.03, 0.0), 0.026));
+        bush = max(bush, jb_pt(bp, vec2(0.0, -0.012), 0.032));
+        bush *= step(p.y, ground + 0.004);
+        acc = mix(acc, vec3(0.22, 0.62, 0.20), bush);
+    }
+
+    // Brick ground band along the bottom (running-bond mortar).
+    float below = step(ground, p.y);
+    float ry = (p.y - ground) / 0.028;
+    float grow = floor(ry);
+    float goff = mod(grow, 2.0) * 0.03;
+    float gux = fract((p.x + goff) / 0.06);
+    float gmort = step(0.90, gux) + step(fract(ry), 0.10);
+    vec3 gcol = mix(vec3(0.82, 0.36, 0.16), vec3(0.45, 0.16, 0.06), clamp(gmort, 0.0, 1.0));
+    acc = mix(acc, gcol, below);
+
+    // Hero jump sync: he only hops when a block sits in his column.
+    float xm = 0.35 * aspect;
+    float worldXm = xm + iTime * v;
+    float k0 = floor(worldXm / bspace);
+    float f0 = worldXm / bspace - k0;
+    float present0 = boxAt(k0);
+    float hop = present0 * 4.0 * f0 * (1.0 - f0) * 0.20;   // parabola, peak under the block
+    float hitPulse = present0 * smoothstep(0.32, 0.5, f0) * smoothstep(0.68, 0.5, f0);
+
+    // Blocks: random ? blocks and brick blocks; the hero's block bumps on a hit.
+    float worldX = p.x + iTime * v;
+    float kb = floor(worldX / bspace);
+    float present = boxAt(kb);
+    float isBrick = step(0.5, hash11(kb * 1.7 + 9.3));
+    float cx = (kb + 0.5) * bspace - iTime * v;
+    float bump = ((abs(kb - k0) < 0.5) ? 1.0 : 0.0) * hitPulse * 0.014;
+    vec2 bc = p - vec2(cx, 0.5 - bump);
+    float inblock = step(abs(bc.x), 0.035) * step(abs(bc.y), 0.035) * present;
+    // Question block: orange with corner rivets and a dark '?'.
+    vec3 qcol = vec3(0.93, 0.58, 0.11);
+    float rivet = jb_pt(bc, vec2(-0.028, -0.028), 0.005) + jb_pt(bc, vec2(0.028, -0.028), 0.005)
+                + jb_pt(bc, vec2(-0.028,  0.028), 0.005) + jb_pt(bc, vec2(0.028,  0.028), 0.005);
+    qcol = mix(qcol, vec3(0.55, 0.30, 0.05), clamp(rivet, 0.0, 1.0));
+    qcol = mix(qcol, vec3(0.30, 0.16, 0.03), qmark(bc));
+    // Brick block: red with running-bond mortar.
+    float bry = (bc.y + 0.035) / 0.0175;
+    float brow = floor(bry);
+    float broff = mod(brow, 2.0) * 0.0175;
+    float bux = fract((bc.x + 0.035 + broff) / 0.035);
+    float bmort = step(0.90, bux) + step(fract(bry), 0.12);
+    vec3 brk = mix(vec3(0.80, 0.32, 0.14), vec3(0.40, 0.14, 0.05), clamp(bmort, 0.0, 1.0));
+    vec3 blkcol = mix(qcol, brk, isBrick);
+    acc = mix(acc, blkcol, inblock);
+
+    // Goomba shuffling along the ground.
+    float ggx = fract(0.6 - iTime * 0.03) * (aspect + 0.3) - 0.15;
+    vec2 gg = p - vec2(ggx, ground);
+    float gdome = step(length((gg - vec2(0.0, -0.020)) / vec2(1.15, 1.0)), 0.024);
+    float gface = step(length((gg - vec2(0.0, -0.008)) / vec2(1.0, 0.75)), 0.018);
+    float gbody = max(gdome, gface) * step(gg.y, 0.0);
+    acc = mix(acc, vec3(0.55, 0.34, 0.14), gbody);
+    float gew = jb_pt(gg, vec2(-0.010, -0.016), 0.006) + jb_pt(gg, vec2(0.010, -0.016), 0.006);
+    acc = mix(acc, vec3(0.98, 0.98, 0.98), gbody * clamp(gew, 0.0, 1.0));
+    float gep = jb_pt(gg, vec2(-0.008, -0.016), 0.0026) + jb_pt(gg, vec2(0.008, -0.016), 0.0026);
+    acc = mix(acc, vec3(0.05, 0.03, 0.02), gbody * clamp(gep, 0.0, 1.0));
+    float gfeet = step(abs(abs(gg.x) - 0.012), 0.007) * step(abs(gg.y + 0.001), 0.004);
+    acc = mix(acc, vec3(0.25, 0.12, 0.05), gfeet);
+
+    // Hero (sprite unchanged): walks the ground, hops into a block above him.
+    float walk = (1.0 - present0) * 0.004 * abs(sin(iTime * 8.0));
+    float footY = ground - hop - walk;
+    vec2 q = vec2(p.x - xm, footY - p.y);
+    vec3 mc; float ma;
+    mario_draw(q, mc, ma);
+    acc = mix(acc, mc, ma);
 
     float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
     float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
@@ -2027,18 +2197,21 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 _GLSL_LEMMINGS = """\
 // SpookiUI treat: Lemmings.
 // A procession of little critters marches along the ground: a bright-green mop
-// of hair, a round peach face, a royal-blue robe, and stubby feet that step in
-// a walk cycle — a nostalgic nod to the 1991 puzzle classic. Original SpookiUI
-// shader: hand-built shapes, no game artwork. Drawn over dark background pixels.
+// of hair, a round peach face, a blue robe, and stubby feet that step in a walk
+// cycle — styled after the 1991 puzzle classic. The sprite is snapped to a
+// coarse pixel grid with hard edges for an authentic chunky pixel-art look.
+// Original SpookiUI shader: hand-built shapes, no game artwork. Drawn over dark
+// background pixels.
 
-// Anti-aliased solid primitives (coverage 0..1). AA width ~1.5px at 1080p.
+// Hard-edged solid primitives (coverage 0 or 1). We snap coordinates to a
+// coarse sprite-pixel grid before evaluating these, so the shapes read as
+// chunky pixel-art blocks like the original 1991 game rather than smooth vectors.
 float lem_box(vec2 p, vec2 b) {
     vec2 d = abs(p) - b;
-    float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
-    return 1.0 - smoothstep(0.0, 0.0016, dist);
+    return step(max(d.x, d.y), 0.0);
 }
 float lem_disc(vec2 p, float r) {
-    return 1.0 - smoothstep(r - 0.0016, r + 0.0016, length(p));
+    return step(dot(p, p), r * r);
 }
 // Paint one coverage layer over the accumulating (col,a), front over back.
 void lem_layer(float m, vec3 c, inout vec3 col, inout float a) {
@@ -2051,10 +2224,14 @@ void lem_layer(float m, vec3 c, inout vec3 col, inout float a) {
 // lemming: q.y points *up*, with the feet resting at q.y == 0. `ph` is the
 // walk-cycle phase; `face` is +1 walking right, -1 walking left (mirrors it).
 void lem_draw(vec2 q, float ph, float face, out vec3 col, out float a) {
-    const vec3 GREEN = vec3(0.06, 0.80, 0.16);   // classic lemming hair-green
-    const vec3 SKIN  = vec3(1.00, 0.82, 0.62);   // peach face
-    const vec3 BLUE  = vec3(0.16, 0.24, 0.95);   // royal-blue robe
+    const vec3 GREEN = vec3(0.09, 0.86, 0.11);   // classic bright hair-green
+    const vec3 SKIN  = vec3(1.00, 0.80, 0.60);   // peach face
+    const vec3 BLUE  = vec3(0.13, 0.28, 0.92);   // blue body/robe
+    const float SCALE = 1.35;                    // overall on-screen sprite size
+    const float PIX   = 0.0052;                  // sprite-pixel size (chunky grid)
+    q /= SCALE;
     q.x *= face;                                 // mirror to face travel dir
+    q = floor(q / PIX) * PIX + 0.5 * PIX;        // snap to the pixel grid
     col = vec3(0.0); a = 0.0;
     float sw = 0.0045 * sin(ph);                 // limb swing, fore/aft
 
@@ -2076,6 +2253,23 @@ void lem_draw(vec2 q, float ph, float face, out vec3 col, out float a) {
     lem_layer(lem_disc(q - vec2(0.006, 0.047), 0.0055), GREEN, col, a);
 }
 
+// Solid stepped terrain: flat ground with a central staircase the lemmings
+// climb up and back down, echoing the original game's dug/built steps. Returns
+// the surface height (screen y, which grows downward) at column `x`.
+float terrain(float x, float aspect) {
+    const float BASE  = 0.90;   // flat-ground baseline
+    const float STEPW = 0.055;  // horizontal run of each step (aspect units)
+    const float STEPH = 0.060;  // vertical rise of each step
+    const float NUP   = 3.0;    // steps up to the peak (and the same back down)
+    float w  = STEPW * (2.0 * NUP + 1.0);
+    float x0 = 0.5 * aspect - 0.5 * w;          // centre the staircase
+    float s  = floor((x - x0) / STEPW);         // step index across the hill
+    float level = 0.0;
+    if (s >= 0.0 && s <= 2.0 * NUP)
+        level = NUP - abs(s - NUP);             // 0..NUP..0 pyramid profile
+    return BASE - level * STEPH;
+}
+
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     vec2 uv = fragCoord / iResolution.xy;
     vec4 term = texture(iChannel0, uv);
@@ -2089,13 +2283,18 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     // Composite solid sprites onto the terminal (screen y grows downward, so a
     // large y is low on screen). res ends as the fully-composited color.
     vec3 res = term.rgb;
-    float ground = 0.90;
 
-    // A grassy ledge for the procession to march along.
-    float gline = 1.0 - smoothstep(0.003, 0.011, abs(p.y - ground));
-    res = mix(res, vec3(0.17, 0.34, 0.14), gline * 0.85 * bgmask);
+    // Solid stepped terrain: brown earth filled down to the bottom of the
+    // screen, with a thin green grass cap hugging the stepped top surface.
+    float gsurf = terrain(p.x, aspect);
+    float body  = step(gsurf, p.y);                       // at/below the surface
+    res = mix(res, vec3(0.32, 0.21, 0.11), body * 0.55 * bgmask);
+    float cap = body * step(p.y, gsurf + 0.012);          // grass strip on top
+    res = mix(res, vec3(0.17, 0.34, 0.14), cap * 0.90 * bgmask);
 
     // A marching line of lemmings, evenly spaced, wrapping across the screen.
+    // Each one's feet rest on the terrain height at its column, so they walk up
+    // and down the staircase as they cross it.
     const int N = 6;
     float walkw = aspect + 0.2;                 // wrap just beyond both edges
     for (int i = 0; i < N; i++) {
@@ -2103,7 +2302,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         float x = fract(fi / float(N) + iTime * 0.045) * walkw - 0.1;
         float ph = iTime * 6.5 + fi * 1.7;      // per-lemming walk phase
         float bob = 0.0035 * abs(sin(ph));      // little vertical hop per step
-        vec2 q = vec2(p.x - x, ground - bob - p.y);   // local, q.y points up
+        float fsurf = terrain(x, aspect);       // step height under this lemming
+        vec2 q = vec2(p.x - x, fsurf - bob - p.y);    // local, q.y points up
         vec3 lc; float a;
         lem_draw(q, ph, 1.0, lc, a);
         res = mix(res, lc, a * bgmask);
@@ -2114,7 +2314,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 """
 
 
-_GLSL_GHOSTS = """\
+_GLSL_GHOSTS = _GLSL_GHOST_SPRITE + """\
 // SpookiUI treat: Ghosts.
 // Friendly cartoon ghosts drift across the screen, bobbing and fading in/out at
 // the edges. Original SpookiUI shader; drawn over dark background pixels only.
@@ -2137,12 +2337,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
         // ghost-local, aspect-corrected. uv.y grows downward, so p.y < 0 is up.
         vec2 p = vec2((uv.x - x) * aspect, uv.y - y);
-        float dome = (p.y < 0.0) ? length(p) : abs(p.x);      // rounded top, straight sides
-        float hem = 1.05 * r + 0.10 * r * sin(p.x / r * 8.0 + iTime * 3.0);  // wavy skirt
-        float shape = step(dome, r) * step(p.y, hem);
-        float eyes = smoothstep(0.28 * r, 0.14 * r, length(p - vec2(-0.34 * r, -0.18 * r)))
-                   + smoothstep(0.28 * r, 0.14 * r, length(p - vec2( 0.34 * r, -0.18 * r)));
-        float body = clamp(shape - eyes, 0.0, 1.0);
+        float body = ghost_body(p, r, iTime * 3.0);
         float fade = smoothstep(0.0, 0.08, x) * smoothstep(1.0, 0.9, x);  // hide the wrap
         acc += vec3(0.72, 0.80, 1.0) * body * fade;
     }

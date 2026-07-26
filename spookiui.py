@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.11.2"
+__version__ = "1.12.0"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -1947,6 +1947,172 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 """
 
+_GLSL_DASHER = """\
+// SpookiUI treat: Dasher.
+// A blue speedster curls into a spin-dash and blazes across a checkered green
+// hill, scattering spinning gold rings and trailing speed-blur — a nostalgic
+// nod to 90s blue-blur speed platformers. Original SpookiUI shader: plain
+// shapes, no game artwork. Drawn over dark background pixels only.
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+    vec2 p = vec2(uv.x * aspect, uv.y);
+
+    vec3 acc = vec3(0.0);
+
+    // Green-hill checkerboard ground. Screen y grows downward, so the ridge
+    // sits near the bottom (large y) and the terrain fills the pixels below it.
+    float ground = 0.86;
+    float below = smoothstep(0.0, 0.006, p.y - ground);
+    float scroll = iTime * 0.6;                          // terrain streams left
+    vec2 cell = vec2((p.x + scroll) * 14.0, (p.y - ground) * 10.0);
+    float checker = mod(floor(cell.x) + floor(cell.y), 2.0);
+    acc += mix(vec3(0.10, 0.45, 0.14), vec3(0.06, 0.30, 0.10), checker) * below;
+    // A brighter grassy lip along the top edge of the ridge.
+    acc += vec3(0.35, 0.75, 0.25)
+         * (1.0 - smoothstep(0.003, 0.010, abs(p.y - ground)));
+
+    // Spinning gold rings drifting left; each spins edge-on and back (its
+    // x-radius collapses toward 0 as it turns side-on, the classic ring spin).
+    const int R = 4;
+    float ringw = aspect + 0.3;
+    for (int i = 0; i < R; i++) {
+        float fi = float(i);
+        float rx = fract(fi / float(R) - iTime * 0.11) * ringw - 0.15;
+        float ry = 0.40 + 0.10 * sin(fi * 2.3);
+        float spin = abs(cos(iTime * 3.0 + fi * 1.7));   // 0 = seen edge-on
+        vec2 rc = (p - vec2(rx, ry)) / vec2(0.030 * (0.15 + 0.85 * spin), 0.036);
+        float rr = length(rc);
+        float ring = smoothstep(1.0, 0.82, rr) * smoothstep(0.45, 0.63, rr);
+        acc += vec3(1.0, 0.82, 0.15) * ring;
+        acc += vec3(1.0, 0.97, 0.70) * ring * smoothstep(0.9, 1.0, spin);  // face shine
+    }
+
+    // The blue speedster: a spin-dashing ball hugging the ground.
+    float dashw = aspect + 0.2;
+    float bx = fract(iTime * 0.33) * dashw - 0.1;
+    float by = ground - 0.045 + 0.006 * sin(iTime * 20.0);   // low jitter/hop
+    vec2 c = p - vec2(bx, by);
+    float br = 0.034;
+    float ball = 1.0 - smoothstep(br - 0.004, br, length(c));
+    // A pinwheel of light spinning inside the ball reads as motion.
+    float ang = atan(c.y, c.x) + iTime * 26.0;
+    float swirl = 0.55 + 0.45 * sin(ang * 3.0);
+    acc += mix(vec3(0.10, 0.20, 0.85), vec3(0.30, 0.55, 1.0), swirl) * ball;
+    // A bright leading edge in the direction of travel.
+    acc += vec3(0.70, 0.90, 1.0) * ball
+         * smoothstep(0.3, 1.0, (c.x / br) * 0.5 + 0.5);
+
+    // Speed-blur: a few horizontal streaks trailing behind the ball.
+    for (int i = 0; i < 4; i++) {
+        float fi = float(i);
+        float ly = by + (fi - 1.5) * 0.015;
+        float len = 0.10 + 0.03 * fi;
+        float xin = smoothstep(bx - len, bx - 0.03, p.x);        // fade in from afar
+        float xout = smoothstep(bx + 0.005, bx - 0.03, p.x);     // stop at the ball
+        float yline = 1.0 - smoothstep(0.0015, 0.005, abs(p.y - ly));
+        float shimmer = 0.5 + 0.5 * sin(iTime * 18.0 - fi * 1.3);
+        acc += vec3(0.70, 0.85, 1.0) * xin * xout * yline * (0.35 + 0.3 * shimmer);
+    }
+
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    vec3 res = term.rgb + acc * 0.6 * bgmask;
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
+_GLSL_LEMMINGS = """\
+// SpookiUI treat: Lemmings.
+// A procession of little critters marches along the ground: a bright-green mop
+// of hair, a round peach face, a royal-blue robe, and stubby feet that step in
+// a walk cycle — a nostalgic nod to the 1991 puzzle classic. Original SpookiUI
+// shader: hand-built shapes, no game artwork. Drawn over dark background pixels.
+
+// Anti-aliased solid primitives (coverage 0..1). AA width ~1.5px at 1080p.
+float lem_box(vec2 p, vec2 b) {
+    vec2 d = abs(p) - b;
+    float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+    return 1.0 - smoothstep(0.0, 0.0016, dist);
+}
+float lem_disc(vec2 p, float r) {
+    return 1.0 - smoothstep(r - 0.0016, r + 0.0016, length(p));
+}
+// Paint one coverage layer over the accumulating (col,a), front over back.
+void lem_layer(float m, vec3 c, inout vec3 col, inout float a) {
+    m = clamp(m, 0.0, 1.0);
+    col = mix(col, c, m);
+    a = max(a, m);
+}
+
+// Paint one lemming into (col,a). q is aspect-corrected and local to the
+// lemming: q.y points *up*, with the feet resting at q.y == 0. `ph` is the
+// walk-cycle phase; `face` is +1 walking right, -1 walking left (mirrors it).
+void lem_draw(vec2 q, float ph, float face, out vec3 col, out float a) {
+    const vec3 GREEN = vec3(0.06, 0.80, 0.16);   // classic lemming hair-green
+    const vec3 SKIN  = vec3(1.00, 0.82, 0.62);   // peach face
+    const vec3 BLUE  = vec3(0.16, 0.24, 0.95);   // royal-blue robe
+    q.x *= face;                                 // mirror to face travel dir
+    col = vec3(0.0); a = 0.0;
+    float sw = 0.0045 * sin(ph);                 // limb swing, fore/aft
+
+    // Layers painted back-to-front; each overwrites where it has coverage.
+    // Hair: green mop capping the top and back of the head.
+    lem_layer(lem_disc(q - vec2(-0.001, 0.046), 0.0135), GREEN, col, a);
+    // Arms swing opposite the legs, tucked at the robe's sides.
+    lem_layer(lem_box(q - vec2(-0.011, 0.026 - sw), vec2(0.0026, 0.008)), BLUE, col, a);
+    lem_layer(lem_box(q - vec2( 0.011, 0.026 + sw), vec2(0.0026, 0.008)), BLUE, col, a);
+    // Legs step in and out of phase; the whole body bobs from the caller.
+    lem_layer(lem_box(q - vec2(-0.004 + sw, 0.006), vec2(0.0030, 0.007)), BLUE, col, a);
+    lem_layer(lem_box(q - vec2( 0.004 - sw, 0.006), vec2(0.0030, 0.007)), BLUE, col, a);
+    // Robe: a blue body, a touch wider at the hem like a little gown.
+    lem_layer(lem_box(q - vec2(0.0, 0.024), vec2(0.0095, 0.011)), BLUE, col, a);
+    lem_layer(lem_box(q - vec2(0.0, 0.015), vec2(0.0115, 0.005)), BLUE, col, a);
+    // Face: peach disc over the lower-front of the hair, leaving a green cap.
+    lem_layer(lem_disc(q - vec2(0.0015, 0.038), 0.0110), SKIN, col, a);
+    // Fringe: a small green tuft flopping over the forehead.
+    lem_layer(lem_disc(q - vec2(0.006, 0.047), 0.0055), GREEN, col, a);
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec4 term = texture(iChannel0, uv);
+    float aspect = iResolution.x / iResolution.y;
+    vec2 p = vec2(uv.x * aspect, uv.y);
+
+    // Only draw over dark background pixels so text stays readable.
+    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+
+    // Composite solid sprites onto the terminal (screen y grows downward, so a
+    // large y is low on screen). res ends as the fully-composited color.
+    vec3 res = term.rgb;
+    float ground = 0.90;
+
+    // A grassy ledge for the procession to march along.
+    float gline = 1.0 - smoothstep(0.003, 0.011, abs(p.y - ground));
+    res = mix(res, vec3(0.17, 0.34, 0.14), gline * 0.85 * bgmask);
+
+    // A marching line of lemmings, evenly spaced, wrapping across the screen.
+    const int N = 6;
+    float walkw = aspect + 0.2;                 // wrap just beyond both edges
+    for (int i = 0; i < N; i++) {
+        float fi = float(i);
+        float x = fract(fi / float(N) + iTime * 0.045) * walkw - 0.1;
+        float ph = iTime * 6.5 + fi * 1.7;      // per-lemming walk phase
+        float bob = 0.0035 * abs(sin(ph));      // little vertical hop per step
+        vec2 q = vec2(p.x - x, ground - bob - p.y);   // local, q.y points up
+        vec3 lc; float a;
+        lem_draw(q, ph, 1.0, lc, a);
+        res = mix(res, lc, a * bgmask);
+    }
+
+    fragColor = vec4(min(res, vec3(1.0)), term.a);
+}
+"""
+
 
 _GLSL_GHOSTS = """\
 // SpookiUI treat: Ghosts.
@@ -2168,6 +2334,16 @@ TREATS: list[Treat] = [
           "A little hero hops beneath scrolling question-blocks.",
           _GLSL_JUMPER,
           "A nostalgic nod to side-scrolling platformers — plain shapes, no game "
+          "artwork."),
+    Treat("dasher", "Dasher",
+          "A blue speedster spin-dashes past, scattering spinning gold rings.",
+          _GLSL_DASHER,
+          "A nostalgic nod to 90s blue-blur speed platformers — plain shapes, no "
+          "game artwork."),
+    Treat("lemmings", "Lemmings",
+          "A line of green-haired critters marches along the ground.",
+          _GLSL_LEMMINGS,
+          "A nostalgic nod to the 1991 puzzle classic — plain shapes, no game "
           "artwork."),
     Treat("ghosts", "Ghosts",
           "Friendly cartoon ghosts drift by, bobbing and fading.",

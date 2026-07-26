@@ -1,28 +1,11 @@
 #!/usr/bin/env python3
-"""
-SpookiUI — a live configurator for the Ghostty terminal.
+"""SpookiUI - a live configurator for the Ghostty terminal.
 
-Run with no arguments to launch the interactive TUI:
-
-    ./spookiui.py
-
-Because Ghostty cannot auto-reload its config on file change, this tool writes
-your config file and then triggers Ghostty to reload it so changes appear
-*live*: on macOS by clicking the "Reload Configuration" menu item (via
-AppleScript), and on Linux by sending the running Ghostty process the SIGUSR2
-signal it reloads on. When you run this inside a Ghostty window, you watch the
-very terminal you're in repaint as you edit.
-
-Every option Ghostty exposes is discovered dynamically from the binary itself
-(`ghostty +show-config --default --docs`), so this stays in sync with whatever
-Ghostty version you have installed — nothing is hard-coded.
-
-There is also a scriptable, non-interactive CLI: `get`, `set`, `list`, `doc`,
-`reset`, `version`, `update`, `profile`, `doctor`, `fix-ssh`, `treats`,
-`reload`, `validate`, `themes`, `fonts`, `path`. Run `./spookiui.py --help`.
-
-On startup SpookiUI checks GitHub for a newer release (cached for a day; set
-SPOOKIUI_NO_UPDATE_CHECK=1 to disable) and shows a badge if one is available.
+Run with no arguments for the interactive TUI, or use the scriptable CLI
+(see --help). Options are discovered from the Ghostty binary at runtime,
+so the tool tracks whatever Ghostty version is installed. Config edits are
+written and then reloaded live: on macOS via the "Reload Configuration"
+menu item, on Linux via SIGUSR2.
 """
 from __future__ import annotations
 
@@ -39,7 +22,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.11.1"
+__version__ = "1.11.2"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -64,10 +47,6 @@ IS_MACOS = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
 CAN_RELOAD = IS_MACOS or IS_LINUX
 INSIDE_GHOSTTY = os.environ.get("TERM_PROGRAM") == "ghostty"
-# Whether the running Ghostty exposes the `iFocus` custom-shader uniform (newer
-# versions). Detected from the docs scrape in load_schema(). When true, treats
-# hide + dim an unfocused window; when false we fall back to the plain composite
-# so treats keep working unchanged on older Ghostty. Default False = safe.
 SUPPORTS_SHADER_FOCUS = False
 CURRENT_PLATFORM = "macos" if IS_MACOS else ("linux" if IS_LINUX else None)
 
@@ -145,13 +124,7 @@ def _fetch_latest_release(timeout: float = 4.0) -> dict | None:
 
 
 def check_for_update(force: bool = False, now: float | None = None) -> dict | None:
-    """Return update info, cached to at most one network call per day.
-
-    Result: {latest, url, notes, current, outdated}. Returns None only when we
-    have no information at all (never checked and the network call failed). A
-    successful check that finds you're up to date returns a dict with
-    outdated=False. `force` bypasses both the opt-out and the cache TTL.
-    """
+    """Return update info, cached to at most one network call per day."""
     if _update_check_disabled() and not force:
         return None
     now = time.time() if now is None else now
@@ -199,8 +172,7 @@ def _git_checkout_root(path: str) -> str | None:
 
 
 def _is_homebrew_install(path: str) -> bool:
-    """Whether `path` is a Homebrew-managed copy (in a Cellar / brew prefix).
-    Such installs must be updated with `brew upgrade`, not in place."""
+    """Whether `path` is a Homebrew-managed copy (in a Cellar / brew prefix)."""
     rp = os.path.realpath(path)
     if f"{os.sep}Cellar{os.sep}" in rp:
         return True
@@ -340,10 +312,7 @@ SLIDER_RANGES = {
 
 
 def slider_range(opt: Option):
-    """Return (min, max, step) if this option should use a slider, else None.
-
-    Kept tolerant of Ghostty version drift: any future 0–1 opacity option is
-    picked up from its docs without needing to be listed explicitly."""
+    """Return (min, max, step) if this option should use a slider, else None."""
     if opt.name in SLIDER_RANGES:
         return SLIDER_RANGES[opt.name]
     if opt.kind == "float":
@@ -378,12 +347,7 @@ _BACKTICK_RE = re.compile(r"`([^`]+)`")
 
 
 def _enum_values_from_doc(doc: str) -> list[str]:
-    """Pull enum choices from a bulleted doc block. Ghostty sometimes packs
-    several values onto one bullet (`macos-icon`: `blueprint`, `chalkboard`, …)
-    and wraps the list onto continuation lines, so we gather backtick tokens
-    from each bullet *and* its continuation lines — but only the part before the
-    ` - `/` — ` description, so backticked terms in prose aren't mistaken for
-    values."""
+    """Pull enum choices from a bulleted doc block."""
     vals: list[str] = []
     in_item = False
     for raw in doc.split("\n"):
@@ -473,39 +437,28 @@ CATEGORY_ORDER = [
     "Keybindings", "macOS", "Linux / GTK", "Advanced",
 ]
 
-# A synthetic left-pane category that isn't schema-backed: it lists one-shot
-# maintenance actions (e.g. Fix SSH) instead of Ghostty options. Opening it
-# (Enter/→) launches the Utils menu overlay.
 UTILS_CATEGORY = "⚙ Utils"
 
-# Another synthetic category: "Treats" are fun, purely-cosmetic animated
-# background shaders (a Matrix rain, neon pipes, fireworks) that SpookiUI
-# bundles and toggles via Ghostty's `custom-shader`. All default OFF, and only
-# one runs at a time. Opening it (Enter/→) launches the Treats overlay. See the
-# TREATS registry below.
 TREATS_CATEGORY = "🍬 Treats"
 
-# Nerd Font glyphs shown beside each root category when a Nerd Font is in use
-# (see icons_available()). Codepoints are FontAwesome-range nf-fa-* icons; if a
-# Nerd Font isn't the terminal font they'd render as tofu, so icons stay off.
 CATEGORY_ICONS = {
-    "Colors & Theme": "",       # paint brush
-    "Font": "",                 # font
-    "Cursor": "",               # i-cursor
-    "Window": "",               # window
-    "Spacing & Metrics": "",    # arrows
-    "Mouse": "",                # mouse pointer
-    "Clipboard & Selection": "",  # clipboard
-    "Quick Terminal": "",       # terminal
-    "Shell & Commands": "",     # code
-    "Keybindings": "",          # keyboard
-    "macOS": "",                # apple
-    "Linux / GTK": "",          # linux
-    "Advanced": "",             # cogs
-    UTILS_CATEGORY: "",         # cog
-    TREATS_CATEGORY: "",       # magic wand
+    "Colors & Theme": "",
+    "Font": "",
+    "Cursor": "",
+    "Window": "",
+    "Spacing & Metrics": "",
+    "Mouse": "",
+    "Clipboard & Selection": "",
+    "Quick Terminal": "",
+    "Shell & Commands": "",
+    "Keybindings": "",
+    "macOS": "",
+    "Linux / GTK": "",
+    "Advanced": "",
+    UTILS_CATEGORY: "",
+    TREATS_CATEGORY: "",
 }
-DEFAULT_CATEGORY_ICON = ""      # folder
+DEFAULT_CATEGORY_ICON = ""
 
 
 def _categorize(name: str) -> str:
@@ -584,13 +537,7 @@ _CROSS_PLATFORM_HINTS = (
 
 
 def _platform_of(opt: Option) -> str | None:
-    """'macos' or 'linux' if the option is exclusive to that OS, else None.
-
-    Keys off the option name prefix first (unambiguous) and falls back to
-    scanning the scraped docs. Like the rest of the schema layer this stays
-    tolerant of Ghostty version drift — an unrecognised phrase just means the
-    option is treated as cross-platform and shown everywhere.
-    """
+    """'macos' or 'linux' if the option is exclusive to that OS, else None."""
     name = opt.name
     if name.startswith("macos"):
         return "macos"
@@ -623,8 +570,6 @@ def load_schema() -> dict[str, Option]:
     if proc.returncode != 0 and not proc.stdout:
         raise RuntimeError("failed to read ghostty defaults: " + proc.stderr.strip())
 
-    # Treats gate their focus-aware dimming on whether this Ghostty documents the
-    # `iFocus` shader uniform (it's described in the `custom-shader` doc block).
     global SUPPORTS_SHADER_FOCUS
     SUPPORTS_SHADER_FOCUS = "iFocus" in proc.stdout
 
@@ -672,7 +617,6 @@ class ConfigFile:
     KEY_RE = re.compile(r"^(\s*)([a-z0-9][a-z0-9-]*)(\s*=\s*)(.*?)(\s*)$")
     MANAGED_HEADER = "# ─────────── added by SpookiUI ───────────"
     LEGACY_HEADERS = ("# ─────────── added by GhostlyConfig ───────────",)
-    # SpookiUI's own commented-out bookkeeping markers (see unset/set_scalar).
     NOISE_RE = re.compile(r"#\s*\((removed|superseded)\)\s*$")
 
     def __init__(self, path: str):
@@ -689,8 +633,7 @@ class ConfigFile:
         self._prune_managed_noise()
 
     def _managed_start(self) -> int:
-        """Index of the first line inside the managed section (everything SpookiUI
-        appends), or len(lines) if there's no managed header yet."""
+        """Index of the first line inside the managed section (everything SpookiUI appends), or len(lines) if there's no managed header yet."""
         headers = (self.MANAGED_HEADER, *self.LEGACY_HEADERS)
         for i, line in enumerate(self.lines):
             if line in headers:
@@ -698,10 +641,7 @@ class ConfigFile:
         return len(self.lines)
 
     def _prune_managed_noise(self) -> None:
-        """Drop SpookiUI's own commented-out bookkeeping lines (`# (removed)` /
-        `# (superseded)`) from the managed section, where they otherwise pile up
-        as a treat is toggled on and off. Lines outside the managed section are
-        left untouched so any history in your own config is preserved."""
+        """Drop SpookiUI's own commented-out bookkeeping lines (`# (removed)` / `# (superseded)`) from the managed section, where they otherwise pile up as a treat is toggled on and off."""
         start = self._managed_start()
         self.lines = [ln for i, ln in enumerate(self.lines)
                       if not (i >= start and self.NOISE_RE.search(ln))]
@@ -776,9 +716,6 @@ class ConfigFile:
             self._append_managed(new_lines)
 
     def unset(self, name: str) -> None:
-        # Delete our own managed lines outright (they'd otherwise accumulate as
-        # `# (removed)` noise every time e.g. a treat is toggled); comment out
-        # lines in your own config so that history is preserved.
         start = self._managed_start()
         for i in sorted(self.indices_of(name), reverse=True):
             if i >= start:
@@ -807,8 +744,7 @@ class ConfigFile:
             fh.write(text)
 
     def backup(self) -> str | None:
-        """Make at most one backup per day (a safety net; the TUI also keeps
-        an in-memory original for its own revert)."""
+        """Make at most one backup per day (a safety net; the TUI also keeps an in-memory original for its own revert)."""
         if not os.path.exists(self.path):
             return None
         dst = f"{self.path}.spookiui.{time.strftime('%Y%m%d')}.bak"
@@ -853,9 +789,7 @@ def validate(text: str) -> tuple[bool, list[str]]:
 
 
 def reload_ghostty() -> tuple[bool, str]:
-    """Trigger Ghostty to reload its configuration (live). macOS clicks the
-    'Reload Configuration' menu item via AppleScript; Linux sends the running
-    Ghostty process the SIGUSR2 signal it reloads on."""
+    """Trigger Ghostty to reload its configuration (live)."""
     if IS_MACOS:
         return _reload_macos()
     if IS_LINUX:
@@ -1056,8 +990,7 @@ def find_theme_file(name: str) -> str | None:
 
 
 def theme_variant_name(value: str) -> str:
-    """A theme value may be composite (`light:A,dark:B`); pick one name to
-    preview, preferring the dark variant."""
+    """A theme value may be composite (`light:A,dark:B`); pick one name to preview, preferring the dark variant."""
     value = value.strip()
     if "," not in value and ":" not in value:
         return value
@@ -1186,9 +1119,7 @@ class Session:
         return True, "reverted to session start"
 
     def restore_defaults(self) -> tuple[bool, str]:
-        """Clear the config file entirely so Ghostty falls back to every one of
-        its built-in defaults. Follows the same validate → back up → write →
-        reload → rollback discipline as every other mutation path."""
+        """Clear the config file entirely so Ghostty falls back to every one of its built-in defaults."""
         snap = list(self.cfg.lines)
         blank = (
             self.cfg.MANAGED_HEADER + "\n"
@@ -1237,8 +1168,7 @@ class Session:
         return True, f"saved profile '{name}'"
 
     def load_profile(self, name: str) -> tuple[bool, str]:
-        """Apply a named profile: validate, back up, write, reload, rollback on
-        failure — the same discipline as every other mutation path."""
+        """Apply a named profile: validate, back up, write, reload, rollback on failure - the same discipline as every other mutation path."""
         path = profile_path(name)
         if not os.path.isfile(path):
             return False, f"no profile named '{name}'"
@@ -1295,8 +1225,7 @@ def profiles_dir() -> str:
 
 
 def treats_state_path() -> str:
-    """Small global-preference file for treats (vibrancy, dim-unfocused). Kept
-    outside Ghostty's config so it's a preference, not part of any saved profile."""
+    """Small global-preference file for treats (vibrancy, dim-unfocused)."""
     return os.path.join(spookiui_data_dir(), "treats.json")
 
 
@@ -1311,8 +1240,7 @@ def _read_treats_state() -> dict:
 
 
 def _write_treats_state(**changes) -> None:
-    """Merge `changes` into the treats preference file (read-modify-write so one
-    preference never clobbers another)."""
+    """Merge `changes` into the treats preference file (read-modify-write so one preference never clobbers another)."""
     state = _read_treats_state()
     state.update(changes)
     os.makedirs(spookiui_data_dir(), exist_ok=True)
@@ -1321,9 +1249,7 @@ def _write_treats_state(**changes) -> None:
 
 
 def get_treat_vibrancy() -> float:
-    """How strongly the active treat's animation shows, in [0.0, 1.0]. 1.0 (the
-    default) is the tuned look treats ship with; lower fades the effect toward
-    invisible."""
+    """How strongly the active treat's animation shows, in [0.0, 1.0]."""
     try:
         v = float(_read_treats_state().get("vibrancy", 1.0))
     except (ValueError, TypeError):
@@ -1337,9 +1263,7 @@ def set_treat_vibrancy_value(v: float) -> None:
 
 
 def get_dim_unfocused() -> bool:
-    """Whether an unfocused Ghostty window is dimmed + desaturated to set it apart
-    from the focused one. Defaults to True (the behaviour treats have always had).
-    Only takes effect on Ghostty builds exposing `iFocus` (see SUPPORTS_SHADER_FOCUS)."""
+    """Whether an unfocused Ghostty window is dimmed + desaturated to set it apart from the focused one."""
     return bool(_read_treats_state().get("dim_unfocused", True))
 
 
@@ -1349,9 +1273,7 @@ def set_dim_unfocused_value(on: bool) -> None:
 
 
 def icons_available(sess: "Session") -> bool:
-    """Whether to show Nerd Font category icons. We can't ask the terminal if a
-    glyph will render, so we key off the strongest signal we have: the terminal
-    (Ghostty) font. `SPOOKIUI_ICONS=1/0` forces it on/off."""
+    """Whether to show Nerd Font category icons."""
     env = os.environ.get("SPOOKIUI_ICONS", "").strip().lower()
     if env in ("1", "true", "yes", "on"):
         return True
@@ -1409,9 +1331,7 @@ _DEFAULT_KEYBINDS_CACHE: dict[str, str] | None = None
 
 
 def _split_keybind(entry: str) -> tuple[str, str]:
-    """Split a `trigger=action` keybind. Actions never contain `=`, so the last
-    `=` is the separator — this handles triggers that include the `=` key
-    (e.g. `super+==increase_font_size`)."""
+    """Split a `trigger=action` keybind."""
     trigger, sep, action = entry.rpartition("=")
     return (trigger, action) if sep else (entry, "")
 
@@ -1437,8 +1357,7 @@ def list_default_keybinds() -> dict[str, str]:
 
 
 def run_doctor(sess: "Session") -> list[tuple[str, str]]:
-    """Health-check the config. Returns (severity, message) pairs where
-    severity is error / warn / info / ok, most serious first."""
+    """Health-check the config."""
     cfg, schema = sess.cfg, sess.schema
     errors, warns, infos = [], [], []
 
@@ -1491,16 +1410,6 @@ def run_doctor(sess: "Session") -> list[tuple[str, str]]:
         findings = [("ok", "no issues found — config looks healthy")]
     return findings
 
-
-# ── Utils: SSH terminfo fix ─────────────────────────────────────────────────
-#
-# Ghostty advertises itself to programs with TERM=xterm-ghostty. When you SSH
-# into another host, that host looks "xterm-ghostty" up in *its own* terminfo
-# database — and most remote boxes have never heard of it. The remote shell
-# then misbehaves: garbled or dead keys, no colour, broken `clear`/`tput`, or
-# the classic `Error opening terminal: xterm-ghostty`. Forcing the `ssh`
-# command to use a TERM every host already ships (xterm-256color) sidesteps
-# this without touching the remote. The alias below does exactly that.
 
 SSH_ALIAS_LINE = 'alias ssh="TERM=xterm-256color ssh"'
 SSH_FIX_MARKER = "# added by SpookiUI — force a portable TERM over SSH (see fix-ssh)"
@@ -1559,8 +1468,7 @@ def ssh_rc_scan_files() -> list[str]:
 
 
 def ssh_rc_target() -> str:
-    """Which rc file to add the alias to: the current login shell's primary rc.
-    Defaults to ~/.zshrc (the macOS/Ghostty default shell) when unsure."""
+    """Which rc file to add the alias to: the current login shell's primary rc."""
     shell = os.path.basename(os.environ.get("SHELL", ""))
     home = _home()
     if shell == "bash":
@@ -1586,12 +1494,7 @@ def find_ssh_alias() -> str | None:
 
 
 def _verify_rc(path: str) -> tuple[bool, str]:
-    """The 'source refresh' step. We deliberately *syntax-check* the rc with the
-    shell's `-n` flag rather than fully sourcing it: a child process cannot
-    change the parent shell's environment anyway (so a real source would be a
-    no-op for the caller's terminal), and fully executing someone's rc
-    non-interactively can hang or spawn things. This confirms our edit didn't
-    break the file; the caller still tells the user to reload their shell."""
+    """The 'source refresh' step."""
     shell = os.environ.get("SHELL") or "/bin/sh"
     try:
         proc = _run([shell, "-n", path], timeout=10)
@@ -1603,8 +1506,7 @@ def _verify_rc(path: str) -> tuple[bool, str]:
 
 
 def apply_ssh_fix() -> tuple[bool, str]:
-    """Add the ssh TERM alias to the user's shell rc if it isn't already there.
-    Idempotent: a second run finds the alias and does nothing."""
+    """Add the ssh TERM alias to the user's shell rc if it isn't already there."""
     existing = find_ssh_alias()
     if existing:
         return True, (f"already fixed — an ssh alias forcing TERM=xterm-256color "
@@ -1625,49 +1527,6 @@ def apply_ssh_fix() -> tuple[bool, str]:
                   f"(warning: {note}) — {reload_hint}")
 
 
-# ── Treats: fun background shaders ──────────────────────────────────────────
-#
-# Ghostty can run a "custom shader" behind the terminal grid: a ShaderToy-style
-# GLSL fragment shader (`void mainImage(out vec4, in vec2)`) with `iResolution`,
-# `iTime`, and `iChannel0` (the rendered terminal) available. `custom-shader` is
-# a list, so several can be layered, but SpookiUI keeps at most ONE treat active
-# at a time. `custom-shader-animation = true` animates only the focused window.
-# A "treat" is one of these shaders that SpookiUI bundles, writes to
-# `<ghostty-config-dir>/shaders/spookiui/<slug>.glsl`, and toggles for you.
-#
-# When Ghostty exposes the `iFocus` shader uniform (newer versions — see
-# SUPPORTS_SHADER_FOCUS) and the dim-unfocused preference is on (the default, see
-# `get_dim_unfocused`), every treat uses it to *set the unfocused window apart*: an
-# unfocused terminal hides the treat and renders dimmed + desaturated (via the
-# shared `spooki_out` helper in `compose_shader`, gated by the baked `SPOOKI_DIM`
-# const). This is a toggle: turning it off shows unfocused windows at full
-# brightness. It even works with no treat active — a tiny no-op `_dim` shader
-# (`write_dim_shader`) carries the dimming on its own. On older Ghostty without
-# `iFocus` the treats fall back to their plain look and nothing changes.
-#
-# On those same newer versions the treats also drive their animation off a
-# per-focus clock (`iTime - iTimeFocus`, wired in by `compose_shader`) rather than
-# raw `iTime`. Because only the focused surface animates, raw `iTime` jumps ahead
-# while a window is unfocused and the animation lurches forward on refocus; the
-# per-focus clock restarts at 0 each time a window gains focus, so every window
-# animates from the same point at the same rate.
-#
-# Every treat composites *additively* over the terminal and only brightens the
-# darkest background pixels (a tight luminance mask), so the effect fades into the
-# background and your text, cursor, and borders stay readable. Brightness and
-# iteration counts are deliberately kept low so treats are subtle and cheap to
-# render. All treats are OFF by default — nothing is enabled unless you ask.
-
-
-# All treats are original SpookiUI shaders written to the same convention: they
-# composite additively, gated by a tight luminance mask so only the darkest
-# background pixels are touched and your text always stays legible.
-#
-# A single "vibrancy" preference (0–100%, `get_treat_vibrancy`) uniformly scales
-# whichever treat is active — 100% is the tuned look shown here, lower fades the
-# animation toward invisible. It's baked into the shader at write time by
-# `compose_shader` (via the `SPOOKI_VIBRANCY` const in `spooki_out`), set with the
-# `v` key in the treats overlay or `spookiui treats vibrancy <0-100>`.
 _GLSL_MATRIX_RAIN = """\
 // SpookiUI treat: Matrix Rain.
 // Falling green glyph columns in the spirit of `cmatrix`. Drawn only over dark
@@ -2261,12 +2120,12 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
 @dataclass
 class Treat:
-    slug: str          # file/CLI name, e.g. "matrix-rain"
-    name: str          # display name, e.g. "Matrix Rain"
-    desc: str          # one-line summary
-    glsl: str          # the full fragment-shader source
-    note: str = ""     # extra guidance shown in the detail pane
-    season: str = ""   # "" (evergreen) or a SEASONS key, e.g. "halloween"
+    slug: str
+    name: str
+    desc: str
+    glsl: str
+    note: str = ""
+    season: str = ""
 
 
 TREATS: list[Treat] = [
@@ -2334,14 +2193,11 @@ TREATS: list[Treat] = [
 
 TREAT_BY_SLUG: dict[str, Treat] = {t.slug: t for t in TREATS}
 
-# Seasonal packs: a treat's `season` key maps to a display name here. `current_season`
-# gently suggests the pack that fits today's date — nothing is auto-enabled.
 SEASONS = {"halloween": "Halloween", "winter": "Winter"}
 
 
 def current_season() -> str:
-    """A loosely 'in season' key for today, or '' if nothing special is on.
-    October → halloween; December–February → winter."""
+    """A loosely 'in season' key for today, or '' if nothing special is on."""
     m = time.localtime().tm_mon
     if m == 10:
         return "halloween"
@@ -2363,8 +2219,7 @@ def season_hint() -> str:
 
 
 def shaders_dir() -> str:
-    """Where SpookiUI writes its bundled treat shaders (namespaced so we never
-    disturb any `custom-shader` you added yourself)."""
+    """Where SpookiUI writes its bundled treat shaders (namespaced so we never disturb any `custom-shader` you added yourself)."""
     return os.path.join(os.path.dirname(config_path()), "shaders", "spookiui")
 
 
@@ -2372,21 +2227,9 @@ def treat_shader_path(t: Treat) -> str:
     return os.path.join(shaders_dir(), t.slug + ".glsl")
 
 
-# Every treat body ends with this exact line, compositing its additive effect
-# (`res`) over the terminal. We swap it for a call to the shared `spooki_out`
-# helper prepended below, which decides what the unfocused window looks like.
 _SHADER_TAIL = "fragColor = vec4(min(res, vec3(1.0)), term.a);"
 _SHADER_TAIL_NEW = "fragColor = spooki_out(res, term);"
 
-# `spooki_out` scales the treat's additive effect by `SPOOKI_VIBRANCY` (baked in
-# by compose_shader, in [0,1]). `res` is `term.rgb + effect`, so the effect is
-# `res - term.rgb`; at vibrancy 1.0 this reduces to the original `min(res, 1.0)`
-# exactly (the tuned look), and toward 0.0 the animation fades to invisible.
-#
-# Focus-aware output: when the surface is unfocused (Ghostty's `iFocus` uniform
-# is 0), hide the treat entirely and render the terminal dimmed + desaturated so
-# an inactive window is easy to tell apart from the focused one. Prepended before
-# the treat body so `spooki_out` is declared before `mainImage` uses it.
 _FOCUS_EPILOGUE = """\
 // added by SpookiUI: when this window is unfocused and dimming is enabled
 // (SPOOKI_DIM, baked in), hide the treat and render the terminal dimmed +
@@ -2404,8 +2247,6 @@ vec4 spooki_out(vec3 res, vec4 term) {
 
 """
 
-# Fallback for Ghostty versions without `iFocus`: the original passthrough (still
-# scaled by vibrancy), so treats render as before on old builds.
 _PLAIN_EPILOGUE = """\
 vec4 spooki_out(vec3 res, vec4 term) {
     vec3 fx = term.rgb + (res - term.rgb) * SPOOKI_VIBRANCY;    // scale the effect
@@ -2416,26 +2257,12 @@ vec4 spooki_out(vec3 res, vec4 term) {
 
 
 def compose_shader(t: Treat, vibrancy: float = 1.0, dim: bool = True) -> str:
-    """The full GLSL written to disk: the treat's effect wired through the shared
-    `spooki_out` helper, scaled by `vibrancy` (baked in as a GLSL const, since
-    Ghostty custom shaders can't take user uniforms). When this Ghostty exposes
-    `iFocus` and `dim` is set, an unfocused window hides the treat and is dimmed +
-    desaturated; otherwise the plain passthrough is used so treats work on older
-    Ghostty."""
+    """The full GLSL written to disk: the treat's effect wired through the shared `spooki_out` helper, scaled by `vibrancy` (baked in as a GLSL const, since Ghostty custom shaders can't take user uniforms)."""
     epilogue = _FOCUS_EPILOGUE if SUPPORTS_SHADER_FOCUS else _PLAIN_EPILOGUE
     body = t.glsl.replace(_SHADER_TAIL, _SHADER_TAIL_NEW)
     header = (f"const float SPOOKI_VIBRANCY = {max(0.0, min(1.0, vibrancy)):.2f};\n"
               f"const float SPOOKI_DIM = {1.0 if dim else 0.0:.1f};\n")
     if SUPPORTS_SHADER_FOCUS:
-        # `custom-shader-animation = true` only animates the focused surface, and
-        # `iTime` counts from the first rendered frame — so when a window regains
-        # focus its clock has jumped far ahead and the animation lurches forward
-        # (looks "much faster" in the just-focused window than the others). Drive
-        # every treat off a per-focus clock instead: `iTime - iTimeFocus` restarts
-        # at 0 each time a surface gains focus, so all windows animate from the
-        # same point at the same rate with no jump. (Ghostty documents exactly this
-        # use for `iTimeFocus`.) Only bare `iTime` is used in the treat bodies, so a
-        # word-boundary remap is safe.
         header = "#define SPOOKI_TIME (iTime - iTimeFocus)\n" + header
         body = re.sub(r"\biTime\b", "SPOOKI_TIME", body)
     return header + "\n" + epilogue + body
@@ -2443,8 +2270,7 @@ def compose_shader(t: Treat, vibrancy: float = 1.0, dim: bool = True) -> str:
 
 def write_treat_shader(t: Treat, vibrancy: float | None = None,
                        dim: bool | None = None) -> str:
-    """Write a treat's GLSL to disk (idempotent), returning the absolute path.
-    `vibrancy` and `dim` default to the saved global preferences."""
+    """Write a treat's GLSL to disk (idempotent), returning the absolute path."""
     if vibrancy is None:
         vibrancy = get_treat_vibrancy()
     if dim is None:
@@ -2463,11 +2289,6 @@ def write_treat_shader(t: Treat, vibrancy: float | None = None,
     return path
 
 
-# A minimal "shader" that adds no effect of its own — it exists only so the
-# dim-unfocused behaviour can run when no treat is active. Composed through the
-# same `spooki_out` helper: focused windows are an exact passthrough, unfocused
-# ones dim + desaturate (when SPOOKI_DIM is baked on). Namespaced like a treat but
-# NOT registered in TREATS, so `enabled_treat_slugs` never counts it as a treat.
 _GLSL_DIM_ONLY = """\
 // SpookiUI: dim unfocused windows (no animation). Passthrough when focused.
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
@@ -2518,16 +2339,7 @@ def enabled_treat_slugs(sess: "Session") -> list[str]:
 
 
 def apply_treat_lines(sess: "Session", slugs) -> None:
-    """Mutate `sess.cfg.lines` so at most ONE treat is active. Only one treat may
-    run at a time; if `slugs` names several, the first real one wins (pass `[]` to
-    turn treats off). Writes the GLSL files (harmless — not config) and rewrites
-    `custom-shader` + `custom-shader-animation`, preserving any `custom-shader`
-    entries you added yourself. Does NOT validate/write/reload — callers do that
-    (rollback-safe).
-
-    When no treat is active but the dim-unfocused preference is on (and this
-    Ghostty supports `iFocus`), a tiny no-animation `_dim` shader is installed so
-    unfocused windows still dim — the dim behaviour outlives any active treat."""
+    """Mutate `sess.cfg.lines` so at most ONE treat is active."""
     chosen = next((s for s in slugs if s in TREAT_BY_SLUG), None)
     dim_only = (chosen is None and get_dim_unfocused() and SUPPORTS_SHADER_FOCUS)
     ours: list[str] = []
@@ -2545,27 +2357,15 @@ def apply_treat_lines(sess: "Session", slugs) -> None:
     else:
         sess.cfg.unset("custom-shader")
     if chosen or dim_only:
-        # The dim-unfocused effect lives in the shader's `iFocus < 0.5` branch,
-        # which only fires while a surface keeps re-rendering. Per Ghostty's docs,
-        # `custom-shader-animation = true` runs the animation loop *only for the
-        # focused surface* — an unfocused window stops re-rendering and freezes on
-        # its last mid-animation frame, so the shader never re-evaluates with
-        # `iFocus = 0` and the window never dims. `always` keeps every surface
-        # re-rendering, so unfocused windows actually dim (the shader hides the
-        # treat there and paints the dimmed terminal instead). We only pay that
-        # per-surface cost when dimming is in play; with dim off (or no `iFocus`
-        # support) `true` animates just the focused window and leaves the rest idle.
         want_dim = SUPPORTS_SHADER_FOCUS and get_dim_unfocused()
         sess.cfg.set_scalar("custom-shader-animation",
                             "always" if want_dim else "true")
     elif not new_list:
         sess.cfg.unset("custom-shader-animation")
-    # else: only your own shaders remain — leave custom-shader-animation alone.
 
 
 def set_treats(sess: "Session", slugs) -> tuple[bool, str]:
-    """Enable exactly `slugs`, following the validate → back up → write → reload
-    → rollback discipline every mutation path uses."""
+    """Enable exactly `slugs`, following the validate → back up → write → reload → rollback discipline every mutation path uses."""
     snap = list(sess.cfg.lines)
     try:
         apply_treat_lines(sess, slugs)
@@ -2587,10 +2387,7 @@ def set_treats(sess: "Session", slugs) -> tuple[bool, str]:
 
 
 def set_treat_vibrancy(sess: "Session", percent: int) -> tuple[bool, str]:
-    """Set how strongly treats show, as a 0–100 percentage. Persists the global
-    preference and re-bakes the active treat's shader (if any) so the change is
-    live. Only a `.glsl` file changes — never the config file — so there's nothing
-    to validate/roll back; a live reload just picks up the new shader source."""
+    """Set how strongly treats show, as a 0-100 percentage."""
     percent = max(0, min(100, percent))
     set_treat_vibrancy_value(percent / 100.0)
     active = enabled_treat_slugs(sess)
@@ -2609,11 +2406,7 @@ def set_treat_vibrancy(sess: "Session", percent: int) -> tuple[bool, str]:
 
 
 def set_dim_unfocused(sess: "Session", on: bool) -> tuple[bool, str]:
-    """Turn dimming of unfocused windows on/off. Persists the preference, then
-    re-applies treats through the normal validate → write → reload → rollback path
-    so the change takes effect immediately: with a treat active its shader is
-    re-baked; with none active the tiny `_dim` shader is installed (on) or removed
-    (off)."""
+    """Turn dimming of unfocused windows on/off."""
     if not SUPPORTS_SHADER_FOCUS:
         return False, ("this Ghostty build doesn't expose the focus uniform "
                        "needed to dim unfocused windows")
@@ -2663,10 +2456,7 @@ def rgb_to_256(r: int, g: int, b: int) -> int:
 
 
 def _prelaunch_update_check(timeout: float = 3.0) -> dict | None:
-    """Run the update check on launch, bounded so a slow network never stalls the
-    UI. Almost always instant (the result is cached for a day); only the once-a-day
-    live check can block, and it gives up after `timeout` seconds. Returns the same
-    dict as check_for_update() (or None if disabled / not ready / offline)."""
+    """Run the update check on launch, bounded so a slow network never stalls the UI."""
     if _update_check_disabled():
         return None
     box: dict = {}
@@ -2695,8 +2485,6 @@ def run_tui(sess: "Session") -> None:
     if not icons:
         _maybe_show_icon_notice()
 
-    # Check for an update before drawing anything, so the App can greet the user
-    # with a centered update prompt if a newer release is out.
     update_info = _prelaunch_update_check()
 
     try:
@@ -2711,8 +2499,7 @@ def run_tui(sess: "Session") -> None:
 
 
 def _maybe_show_icon_notice() -> None:
-    """Once, before entering the TUI, tell the user how to enable category icons.
-    Never blocks the app — on any hiccup we just continue into the fallback view."""
+    """Once, before entering the TUI, tell the user how to enable category icons."""
     marker = _icon_notice_marker()
     try:
         if os.path.exists(marker):
@@ -2724,7 +2511,7 @@ def _maybe_show_icon_notice() -> None:
         input("Press Enter to continue… ")
     except (EOFError, KeyboardInterrupt):
         pass
-    except Exception:  # noqa: BLE001 — a notice must never stop the app launching
+    except Exception:
         return
     try:
         os.makedirs(spookiui_data_dir(), exist_ok=True)
@@ -2769,11 +2556,7 @@ class App:
 
         self._update_info: dict | None = update_info
         self._update_announced = False
-        # If a newer release turned up in the pre-launch check, greet the user
-        # with a centered prompt before the main loop draws.
         self._launch_prompt_pending = bool(update_info and update_info.get("outdated"))
-        # Only fall back to a background check when the pre-launch one didn't
-        # already give us an answer (e.g. it timed out on a slow network).
         if update_info is None:
             self._start_update_check()
 
@@ -2832,8 +2615,7 @@ class App:
         return pair
 
     def color_pair(self, fg_hex, bg_hex=None):
-        """A curses pair for an explicit fg (and optional bg) hex, cached.
-        Returns None when the terminal can't do 256 colours."""
+        """A curses pair for an explicit fg (and optional bg) hex, cached."""
         c = self.curses
         if c.COLORS < 256:
             return None
@@ -2856,9 +2638,7 @@ class App:
         return pair
 
     def _effective_colors(self, theme_override=None) -> dict:
-        """Resolve the colours that would actually render: Ghostty defaults,
-        then the active (or overridden) theme, then explicit config overrides.
-        Pass theme_override to preview a theme without touching config."""
+        """Resolve the colours that would actually render: Ghostty defaults, then the active (or overridden) theme, then explicit config overrides."""
         schema = self.sess.schema
         pal: dict[int, str] = {}
         popt = schema.get("palette")
@@ -2901,8 +2681,7 @@ class App:
         return {"palette": palette, "fg": fg, "bg": bg, "cursor": cursor}
 
     def _draw_color_preview(self, y, x, width, colors) -> int:
-        """Render a compact theme card (two swatch rows + a sample line).
-        Returns the number of rows drawn (0 if colours are unavailable)."""
+        """Render a compact theme card (two swatch rows + a sample line)."""
         c = self.curses
         if not self.has_swatch or c.COLORS < 256 or width < 18:
             return 0
@@ -2964,7 +2743,6 @@ class App:
         if self._launch_prompt_pending:
             self._launch_update_prompt()
             self._launch_prompt_pending = False
-            # We've already told the user; don't also nag on the status line.
             self._update_announced = True
         while True:
             self.draw()
@@ -3409,9 +3187,7 @@ class App:
         self._msg(m, "ok" if ok else "error")
 
     def _center_box(self, title, body, footer=""):
-        """Draw a centered, bordered modal box. `title` and `footer` are centered
-        and emphasised; `body` lines are drawn left-aligned inside the border. The
-        caller runs its own getch loop after this returns."""
+        """Draw a centered, bordered modal box."""
         c = self.curses
         rows = [("title", title), ("blank", "")]
         rows += [("body", ln) for ln in body]
@@ -3440,8 +3216,7 @@ class App:
         self.scr.refresh()
 
     def _launch_update_prompt(self):
-        """Centered prompt shown once at launch when a newer release is out.
-        Offers to update in place now, or skip straight into the configurator."""
+        """Centered prompt shown once at launch when a newer release is out."""
         info = self._update_info
         if not (info and info.get("outdated")):
             return
@@ -3464,8 +3239,7 @@ class App:
                 return
 
     def _launch_do_update(self):
-        """Run the in-place update from the launch prompt, reporting the outcome
-        in the same centered box, then continue into the UI on any key."""
+        """Run the in-place update from the launch prompt, reporting the outcome in the same centered box, then continue into the UI on any key."""
         import textwrap
         info = self._update_info
         self._center_box(" SpookiUI update ", [f"Updating to {info['latest']}…"])
@@ -3600,9 +3374,7 @@ class App:
         return str(int(round(val)))
 
     def _edit_slider(self, opt: Option, lo: float, hi: float, step: float):
-        """Visual slider for a bounded numeric option. Left/right (or -/+, h/l,
-        j/k) nudge by one step, PgUp/PgDn by ten, Home/End jump to the ends.
-        Every change previews live; Esc rolls back to where we started."""
+        """Visual slider for a bounded numeric option."""
         c = self.curses
         snap = self._snap()
         is_float = opt.kind == "float" or step < 1
@@ -3777,10 +3549,7 @@ class App:
         return ok
 
     def _edit_keybind_form(self, initial: str | None = None) -> str | None:
-        """Guided keybind builder: toggle modifiers, capture/pick a key, choose
-        an action from Ghostty's own list. Cross-platform — terminals can't
-        report ⌘/Super as a keypress, so modifiers are explicit toggles rather
-        than captured. Returns a validated `trigger=action` string, or None."""
+        """Guided keybind builder: toggle modifiers, capture/pick a key, choose an action from Ghostty's own list."""
         c = self.curses
         state = {"mods": {m: False for m in KEYBIND_MODS},
                  "key": "", "action": "", "args": ""}
@@ -3921,10 +3690,7 @@ class App:
             c.curs_set(0)
 
     def _picker(self, title, items, current, preview=None, side=None):
-        """Scrollable, type-to-filter picker. Live-previews the highlighted
-        item (debounced) when auto-apply is on. `side`, if given, is a callback
-        (item, x, y, width) that draws a panel to the right of the list.
-        Returns choice or None."""
+        """Scrollable, type-to-filter picker."""
         c = self.curses
         query = ""
         filtered = list(items)
@@ -4188,8 +3954,7 @@ class App:
                 break
 
     def _utils(self) -> list[dict]:
-        """The Utils menu registry. Each entry is a one-shot maintenance action
-        with an explanation pane; add future utilities here."""
+        """The Utils menu registry."""
         return [
             {
                 "name": "Fix SSH",
@@ -4274,7 +4039,6 @@ class App:
         self.scr.refresh()
         self.scr.getch()
 
-    # ── Treats (background shaders) ─────────────────────────────────────────
 
     def _draw_treats_menu(self, top, bottom, cat_w, opt_w):
         c = self.curses
@@ -4313,8 +4077,7 @@ class App:
                       c.color_pair(4))
 
     def _commit_treats(self, slugs):
-        """Toggle treats live if auto-apply, else stage. Mirrors _commit_list:
-        snapshot, mutate, validate, roll back on failure."""
+        """Toggle treats live if auto-apply, else stage."""
         snap = list(self.sess.cfg.lines)
         try:
             apply_treat_lines(self.sess, slugs)
@@ -4340,9 +4103,6 @@ class App:
         sel = 0
         note = ""
         note_kind = "info"
-        # The list is the treats followed by menu rows: "Vibrancy" (always) and
-        # "Dim unfocused" (only where Ghostty exposes the focus uniform), so both
-        # are discoverable, navigable options — not just hidden keys.
         vib_row = len(TREATS)
         dim_row = len(TREATS) + 1 if SUPPORTS_SHADER_FOCUS else -1
         nrows = len(TREATS) + (2 if SUPPORTS_SHADER_FOCUS else 1)
@@ -4372,7 +4132,6 @@ class App:
                 else:
                     attr = (c.color_pair(6) if on else c.A_NORMAL)
                 self.safe(y, 2, ("→ " if i == sel else "  ") + box + " " + t.name, attr)
-            # Vibrancy menu row, one blank line below the treats.
             vy = top + len(TREATS) + 1
             if vy < h - 3:
                 vattr = (c.color_pair(3) | c.A_BOLD if sel == vib_row
@@ -4380,7 +4139,6 @@ class App:
                 self.safe(vy, 2,
                           ("→ " if sel == vib_row else "  ") + f"Vibrancy  {vib}%",
                           vattr)
-            # Dim-unfocused toggle row (focus-capable Ghostty only).
             if dim_row >= 0 and vy + 1 < h - 3:
                 dim_on = get_dim_unfocused()
                 dattr = (c.color_pair(3) | c.A_BOLD if sel == dim_row
@@ -4478,9 +4236,6 @@ class App:
                 if sel == dim_row:
                     new = not get_dim_unfocused()
                     set_dim_unfocused_value(new)
-                    # Re-apply through the staging-aware commit so it honours
-                    # auto-apply: with a treat on its shader re-bakes, with none on
-                    # the tiny _dim shader is installed (new) or removed (off).
                     ok, errs = self._commit_treats(enabled_treat_slugs(self.sess))
                     verb = "on" if new else "off"
                     if ok:
@@ -4488,15 +4243,13 @@ class App:
                         note, note_kind = f"dim unfocused {verb} ({tag})", "ok"
                         self._msg(note, "ok")
                     else:
-                        set_dim_unfocused_value(not new)   # revert on failure
+                        set_dim_unfocused_value(not new)
                         note = "failed: " + (errs[0] if errs else "?")
                         note_kind = "error"
                     continue
                 t = TREATS[sel]
                 active_now = enabled_treat_slugs(self.sess)
                 turning_on = t.slug not in active_now
-                # Only one treat at a time: turning one on replaces any other;
-                # toggling the active one off leaves none.
                 want = [t.slug] if turning_on else []
                 ok, errs = self._commit_treats(want)
                 if ok:
@@ -4509,10 +4262,7 @@ class App:
                     note_kind = "error"
 
     def _treat_vibrancy_slider(self) -> str:
-        """Slider (0–100%, steps of 5) for how strongly treats show. Previews live
-        by re-baking the active treat and reloading; Esc restores the starting
-        value. Returns a status note for the treats overlay. If no treat is active
-        it still saves the preference (nothing to preview)."""
+        """Slider (0-100%, steps of 5) for how strongly treats show."""
         c = self.curses
         step = 5
         start = int(round(get_treat_vibrancy() * 100 / step)) * step
@@ -4933,12 +4683,11 @@ def cli_treats(sess: Session, args) -> int:
                   f"(one of: {', '.join(t.slug for t in TREATS)})", file=sys.stderr)
             return 2
         if action in ("enable", "only"):
-            # Only one treat runs at a time, so enabling one replaces any other.
             if len(slugs) > 1:
                 print(f"only one treat can be active at a time; using '{slugs[0]}'",
                       file=sys.stderr)
             target = [slugs[0]]
-        else:  # "disable"
+        else:
             target = [s for s in active if s not in slugs]
 
     ok, m = set_treats(sess, target)

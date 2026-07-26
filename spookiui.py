@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-__version__ = "1.12.0"
+__version__ = "1.12.1"
 GITHUB_REPO = "mattj85/SpookiUI"
 
 
@@ -2407,15 +2407,20 @@ _SHADER_TAIL = "fragColor = vec4(min(res, vec3(1.0)), term.a);"
 _SHADER_TAIL_NEW = "fragColor = spooki_out(res, term);"
 
 _FOCUS_EPILOGUE = """\
-// added by SpookiUI: when this window is unfocused and dimming is enabled
-// (SPOOKI_DIM, baked in), hide the treat and render the terminal dimmed +
-// desaturated so the inactive window is set apart from the focused one.
-// `iFocus` is 1.0 while focused, 0.0 while unfocused.
+// added by SpookiUI: the treat animation only ever plays in the focused window.
+// `iFocus` is 1.0 while focused, 0.0 while unfocused. When this window is
+// unfocused we hide the effect and either:
+//   - dim + desaturate the terminal (SPOOKI_DIM baked in), so the inactive
+//     window is set apart from the focused one; or
+//   - render the plain, untouched terminal when dimming is off.
 vec4 spooki_out(vec3 res, vec4 term) {
-    if (SPOOKI_DIM > 0.5 && iFocus < 0.5) {
-        float g = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));  // luminance
-        vec3 inactive = mix(term.rgb, vec3(g), 0.55) * 0.55;    // desaturate, dim
-        return vec4(inactive, term.a);
+    if (iFocus < 0.5) {
+        if (SPOOKI_DIM > 0.5) {
+            float g = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));  // luminance
+            vec3 inactive = mix(term.rgb, vec3(g), 0.55) * 0.55;    // desaturate, dim
+            return vec4(inactive, term.a);
+        }
+        return term;                                               // plain, no effect
     }
     vec3 fx = term.rgb + (res - term.rgb) * SPOOKI_VIBRANCY;    // scale the effect
     return vec4(min(fx, vec3(1.0)), term.a);
@@ -3612,20 +3617,28 @@ class App:
         lo_s, hi_s, val_s = (self._fmt_num(lo, is_float),
                              self._fmt_num(hi, is_float),
                              self._fmt_num(val, is_float))
-        bar_w = max(10, min(48, w - (len(lo_s) + len(hi_s) + 8)))
+        # Width-1 ASCII glyphs so the track stays aligned on terminals that
+        # render box-drawing/●-circle characters as double-width (see the
+        # treats vibrancy slider for the same fix).
+        lbl_l, lbl_r = lo_s + " ", " " + hi_s
+        bar_w = max(10, min(48, w - (len(lbl_l) + len(lbl_r) + 4)))
         knob = max(0, min(bar_w - 1, int(round(frac * (bar_w - 1)))))
         y = max(row + 2, h // 2 - 1)
-        x = max(2, (w - (bar_w + len(lo_s) + len(hi_s) + 4)) // 2)
+        total = len(lbl_l) + 1 + bar_w + 1 + len(lbl_r)
+        x = max(2, (w - total) // 2)
 
-        self.safe(y, x, lo_s + " ", c.color_pair(4))
-        bx = x + len(lo_s) + 1
-        self.safe(y, bx, "━" * knob, c.color_pair(5) | c.A_BOLD)
-        self.safe(y, bx + knob, "●", c.color_pair(6) | c.A_BOLD)
-        self.safe(y, bx + knob + 1, "─" * (bar_w - knob - 1), c.color_pair(4))
-        self.safe(y, bx + bar_w + 1, " " + hi_s, c.color_pair(4))
+        self.safe(y, x, lbl_l, c.color_pair(4))
+        bx = x + len(lbl_l)
+        self.safe(y, bx, "[", c.color_pair(4))
+        tx = bx + 1
+        self.safe(y, tx, "=" * knob, c.color_pair(5) | c.A_BOLD)
+        self.safe(y, tx + knob, "O", c.color_pair(6) | c.A_BOLD)
+        self.safe(y, tx + knob + 1, "-" * (bar_w - knob - 1), c.color_pair(4))
+        self.safe(y, tx + bar_w, "]", c.color_pair(4))
+        self.safe(y, tx + bar_w + 1, lbl_r, c.color_pair(4))
 
-        vtxt = f"  {val_s}  "
-        self.safe(y + 2, max(2, (w - len(vtxt)) // 2), vtxt, c.color_pair(10) | c.A_BOLD)
+        vtxt = f"{val_s}"
+        self.safe(y + 2, max(2, tx + knob - len(vtxt) // 2), vtxt, c.color_pair(10) | c.A_BOLD)
         default_line = f"default: {opt.default or '(empty)'}"
         self.safe(y + 3, max(2, (w - len(default_line)) // 2), default_line, c.color_pair(4))
         self.safe(h - 1, 0,
@@ -4348,10 +4361,12 @@ class App:
                 self.safe(y, dx, "on" if dim_on else "off",
                           (c.color_pair(6) if dim_on else c.color_pair(4))
                           | c.A_BOLD); y += 2
-                for para in ("When another Ghostty window has focus, this window "
-                             "dims + desaturates so the active one stands out.",
-                             "Works even with no treat/animation running — a tiny "
-                             "no-op shader handles it.",
+                for para in ("The treat animation only ever plays in the focused "
+                             "window, whichever way this is set.",
+                             "On: unfocused windows also dim + desaturate so the "
+                             "active one stands out (a tiny no-op shader handles "
+                             "this even with no treat running).",
+                             "Off: unfocused windows show the plain terminal.",
                              "Applies to every window; persists across sessions."):
                     for seg in self._wrap(para, dw):
                         if y >= h - 3:
@@ -4466,15 +4481,23 @@ class App:
             bar_w = max(10, min(48, w - 14))
             knob = max(0, min(bar_w - 1, int(round(pct / 100 * (bar_w - 1)))))
             y = max(7, h // 2 - 1)
-            x = max(2, (w - (bar_w + 8)) // 2)
-            self.safe(y, x, "0% ", c.color_pair(4))
-            bx = x + 4
-            self.safe(y, bx, "━" * knob, c.color_pair(5) | c.A_BOLD)
-            self.safe(y, bx + knob, "●", c.color_pair(6) | c.A_BOLD)
-            self.safe(y, bx + knob + 1, "─" * (bar_w - knob - 1), c.color_pair(4))
-            self.safe(y, bx + bar_w + 1, " 100%", c.color_pair(4))
-            vtxt = f"  {pct}%  "
-            self.safe(y + 2, max(2, (w - len(vtxt)) // 2), vtxt,
+            # Use unambiguous width-1 ASCII glyphs: some terminals render the
+            # box-drawing/●-circle characters as double-width, which desynced
+            # the absolute-positioned segments below 100% and garbled the track.
+            lbl_l, lbl_r = "0% ", " 100%"
+            total = len(lbl_l) + 1 + bar_w + 1 + len(lbl_r)
+            x = max(2, (w - total) // 2)
+            self.safe(y, x, lbl_l, c.color_pair(4))
+            bx = x + len(lbl_l)
+            self.safe(y, bx, "[", c.color_pair(4))
+            tx = bx + 1
+            self.safe(y, tx, "=" * knob, c.color_pair(5) | c.A_BOLD)
+            self.safe(y, tx + knob, "O", c.color_pair(6) | c.A_BOLD)
+            self.safe(y, tx + knob + 1, "-" * (bar_w - knob - 1), c.color_pair(4))
+            self.safe(y, tx + bar_w, "]", c.color_pair(4))
+            self.safe(y, tx + bar_w + 1, lbl_r, c.color_pair(4))
+            vtxt = f"{pct}%"
+            self.safe(y + 2, max(2, tx + knob - len(vtxt) // 2), vtxt,
                       c.color_pair(10) | c.A_BOLD)
             self.safe(h - 1, 0,
                       " ←/→ adjust · PgUp/PgDn ×10 · Home/End min/max · Enter apply · Esc cancel ".ljust(w),

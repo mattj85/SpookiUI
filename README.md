@@ -315,11 +315,13 @@ They're designed to stay out of your way:
   **Vibrancy** row in the treats overlay to open the slider (or press `v`), or use
   `treats vibrancy <0-100>` from the CLI. It's a global preference, so it applies
   to whichever treat you turn on.
-- **Dim unfocused windows** — when another Ghostty window has focus, the inactive
-  ones dim + desaturate so the active window stands out. It works even with no
-  treat running (a tiny no-op shader handles it), toggles from the **Dim
-  unfocused** row in the overlay or `treats dim on|off`, and persists across
-  sessions. Requires a Ghostty build that exposes the focus shader uniform.
+- **Dim unfocused windows** — the treat animation only ever plays in the
+  *focused* window; this setting controls what the others show. **On**, unfocused
+  windows dim + desaturate so the active one stands out (a tiny no-op shader
+  handles it even with no treat running); **off**, they show the plain terminal.
+  Toggle it from the **Dim unfocused** row in the overlay or `treats dim on|off`,
+  and it persists across sessions. Requires a Ghostty build that exposes the focus
+  shader uniform.
 
 Toggle them in the TUI (`Space`/`Enter`, `v` for vibrancy), or from the CLI:
 

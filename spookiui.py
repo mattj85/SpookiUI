@@ -622,6 +622,8 @@ class ConfigFile:
     def __init__(self, path: str):
         self.path = path
         self.lines: list[str] = []
+        # Optional hook run after every successful write; see Session.__init__.
+        self.after_write = None
         self.reload()
 
     def reload(self) -> None:
@@ -742,6 +744,8 @@ class ConfigFile:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, "w", encoding="utf-8") as fh:
             fh.write(text)
+        if self.after_write is not None:
+            self.after_write()
 
     def backup(self) -> str | None:
         """Make at most one backup per day (a safety net; the TUI also keeps an in-memory original for its own revert)."""
@@ -1093,6 +1097,11 @@ class Session:
     def __init__(self):
         self.schema = load_schema()
         self.cfg = ConfigFile(config_path())
+        # Treat shaders have the theme's background colour baked in, so every
+        # path that rewrites the config -- profiles, light/dark toggle, reverts,
+        # resets, the theme picker's live preview and its cancel -- has to rewrite
+        # them too. One hook here, rather than a call at each of those sites.
+        self.cfg.after_write = lambda: rebake_treat_shaders(self)
         self.original_text = self.cfg.render()
         self.backup_path: str | None = None
         self.auto_apply = True
@@ -2647,7 +2656,7 @@ _SHADER_TAIL_NEW = "fragColor = spooki_out(res, term);"
 # the second half of a `light:x,dark:y` theme, and the mask width to use.
 _SHADER_PRELUDE = """\
 const vec3 SPOOKI_LUMA = vec3(0.2126, 0.7152, 0.0722);
-const int SPOOKI_TAPS = 12;
+const int SPOOKI_TAPS = 8;
 
 // Per-channel distance, so a colour that merely matches the background's
 // brightness -- bright yellow text on a cream background, say -- is still told
@@ -2691,12 +2700,13 @@ vec3 spooki_bg_estimate() {
 }
 
 // The background colour to measure pixels against. The baked value wins: it is
-// exact, where anything read off the screen is a guess about content. The one
-// thing we won't do is keep trusting it when NO sample resembles it, which means
-// the config changed under us, or this build hands the shader colours in a
-// different space than we baked.
+// exact, where anything read off the screen is a guess about live content. We
+// abandon it only when nothing on screen looks like it at all, which means the
+// config changed outside SpookiUI, or this build hands the shader colours in a
+// different space than the one we baked.
 vec3 spooki_bg_resolve() {
     if (SPOOKI_BG_A.r < 0.0) return spooki_bg_estimate();
+    vec3 pick = SPOOKI_BG_A;
     if (SPOOKI_BG_B.r >= 0.0) {
         // A `light:x,dark:y` theme: the live half is whichever more of the
         // screen looks like. A majority vote survives a split or an overlay
@@ -2706,27 +2716,18 @@ vec3 spooki_bg_resolve() {
             vec3 c = spooki_tap(i);
             if (spooki_dist(c, SPOOKI_BG_A) < spooki_dist(c, SPOOKI_BG_B)) votes++;
         }
-        return (votes * 2 >= SPOOKI_TAPS) ? SPOOKI_BG_A : SPOOKI_BG_B;
+        pick = (votes * 2 >= SPOOKI_TAPS) ? SPOOKI_BG_A : SPOOKI_BG_B;
     }
-    // Keep the baked colour as long as a decent share of the screen still looks
-    // like it. Two things matter here. A tap only counts if the mask would treat
-    // it as background outright -- judging agreement any more loosely than the
-    // mask judges background keeps a value alive that paints nothing at all. And one
-    // matching tap isn't enough: after a dark-to-light theme change the old
-    // background often resembles the new *text*. Background covers well over a
-    // third of any normal screen, so that is the bar.
-    int agree = 0;
+    // Whichever we settled on, keep it only if some of the screen really does
+    // look like it. The vote above is relative, so on its own it cannot tell
+    // "this half of the pair" from "neither half". Judge that as strictly as the
+    // mask judges background: a colour the mask would reject paints nothing at
+    // all, which is the failure this whole change exists to remove. One clear
+    // match is enough -- demanding a share of the screen instead would hand the
+    // answer to any window-filling overlay and make treats blink in and out.
     for (int i = 0; i < SPOOKI_TAPS; i++)
-        if (spooki_dist(spooki_tap(i), SPOOKI_BG_A) < SPOOKI_MASK_LO) agree++;
-    return (agree * 3 >= SPOOKI_TAPS) ? SPOOKI_BG_A : spooki_bg_estimate();
-}
-
-// Resolved once per pixel rather than once per caller: both the mask and the
-// light/dark decision want it, and it costs a dozen texture reads.
-vec3 _spooki_bg = vec3(-2.0);
-vec3 spooki_bg() {
-    if (_spooki_bg.r < -1.0) _spooki_bg = spooki_bg_resolve();
-    return _spooki_bg;
+        if (spooki_dist(spooki_tap(i), pick) < SPOOKI_MASK_LO) return pick;
+    return spooki_bg_estimate();
 }
 
 // 1.0 where the pixel is still background, 0.0 over a glyph, so treats never
@@ -2737,7 +2738,7 @@ vec3 spooki_bg() {
 // would mistake for background.
 float spooki_bgmask(vec3 term) {
     return 1.0 - smoothstep(SPOOKI_MASK_LO, SPOOKI_MASK_HI,
-                            spooki_dist(term, spooki_bg()));
+                            spooki_dist(term, spooki_bg_resolve()));
 }
 
 // Re-express light a treat wanted to EMIT as pigment it ABSORBS instead: same
@@ -2765,7 +2766,7 @@ vec3 spooki_ink(vec3 res, vec3 term) {
 // cancel -- the emitted and absorbed versions pull the same pixel opposite ways,
 // so a mid-grey theme would come out blank.
 bool spooki_is_light() {
-    return dot(spooki_bg(), SPOOKI_LUMA) > 0.5;
+    return dot(spooki_bg_resolve(), SPOOKI_LUMA) > 0.5;
 }
 
 """
@@ -2786,6 +2787,7 @@ vec4 spooki_out(vec3 res, vec4 term) {
         }
         return term;                                               // plain, no effect
     }
+    if (res == term.rgb) return term;      // the treat painted nothing here
     vec3 lit = spooki_is_light() ? spooki_ink(res, term.rgb) : res;  // suit the theme
     vec3 fx = term.rgb + (lit - term.rgb) * SPOOKI_VIBRANCY;    // scale the effect
     return vec4(clamp(fx, vec3(0.0), vec3(1.0)), term.a);
@@ -2795,6 +2797,7 @@ vec4 spooki_out(vec3 res, vec4 term) {
 
 _PLAIN_EPILOGUE = """\
 vec4 spooki_out(vec3 res, vec4 term) {
+    if (res == term.rgb) return term;      // the treat painted nothing here
     vec3 lit = spooki_is_light() ? spooki_ink(res, term.rgb) : res;  // suit the theme
     vec3 fx = term.rgb + (lit - term.rgb) * SPOOKI_VIBRANCY;    // scale the effect
     return vec4(clamp(fx, vec3(0.0), vec3(1.0)), term.a);
@@ -2809,13 +2812,17 @@ def background_colors(sess: "Session") -> list[tuple[float, float, float]]:
     a `light:A,dark:B` theme, where only the running terminal knows which is live.
     Empty when we genuinely can't tell, which leaves the shader to work it out from
     what's on screen."""
+    # Ghostty applies `theme` as an include at its position in the file, so which
+    # of the two wins depends on their order, not on which one is a theme.
+    bg_at = sess.cfg.indices_of("background")
+    theme_at = sess.cfg.indices_of("theme")
     override = sess.cfg.get_value("background")
-    if override:
+    if override and (not theme_at or (bg_at and bg_at[-1] > theme_at[-1])):
+        # An explicit background we can't read (an X11 colour name) means we know
+        # the theme is NOT the answer, so guessing it would be worse than saying
+        # nothing and letting the shader read the colour off the screen.
         rgb = color_rgb(override)
-        if rgb is not None:
-            return [rgb]
-        # An X11 colour name or something else we can't read. Fall through rather
-        # than give up: the theme is still a better guess than nothing.
+        return [rgb] if rgb is not None else []
 
     theme_val = sess.effective("theme")
     colors: list[tuple[float, float, float]] = []
@@ -2869,6 +2876,17 @@ def compose_shader(t: Treat, vibrancy: float = 1.0, dim: bool = True,
     return header + "\n" + _SHADER_PRELUDE + epilogue + body
 
 
+def _write_shader_atomic(path: str, source: str) -> None:
+    """Write a shader in one step. Ghostty is told to reload immediately after,
+    and these are now rewritten as often as every keystroke in the theme picker,
+    so it must never be possible to read a half-written file: a truncated shader
+    fails to compile and the treat just disappears."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(source)
+    os.replace(tmp, path)
+
+
 def write_treat_shader(t: Treat, vibrancy: float | None = None,
                        dim: bool | None = None,
                        sess: "Session | None" = None) -> str:
@@ -2888,8 +2906,7 @@ def write_treat_shader(t: Treat, vibrancy: float | None = None,
                 return path
     except OSError:
         pass
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(source)
+    _write_shader_atomic(path, source)
     return path
 
 
@@ -2921,8 +2938,7 @@ def write_dim_shader(sess: "Session | None" = None) -> str:
                 return path
     except OSError:
         pass
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(source)
+    _write_shader_atomic(path, source)
     return path
 
 
@@ -2932,13 +2948,13 @@ def _is_treat_path(value: str) -> bool:
     return os.path.abspath(os.path.expanduser(value.strip())).startswith(base)
 
 
-def rebake_treat_shaders(sess: "Session", changed: str = "") -> None:
+def rebake_treat_shaders(sess: "Session") -> None:
     """Rewrite the active treat so it matches the colours now configured. The
-    background colour is baked into the shader, so changing `theme` or
+    background colour is baked into the shader, so any change to `theme` or
     `background` -- including scrolling the theme picker, which applies each
-    highlighted theme live -- leaves the treat measuring against the old one."""
-    if changed and changed not in ("theme", "background"):
-        return
+    highlighted theme live, and backing out of it again -- leaves the treat
+    measuring against a colour that is no longer on screen. Writing is idempotent
+    and content-compared, so running this after every config write is cheap."""
     for slug in enabled_treat_slugs(sess):
         try:
             write_treat_shader(TREAT_BY_SLUG[slug], sess=sess)
@@ -3754,7 +3770,6 @@ class App:
         self.sess.ensure_backup()
         self.sess.cfg.write(text)
         self.sess.dirty = False
-        rebake_treat_shaders(self.sess, opt.name)
         reload_ghostty()
         return True, []
 
@@ -5118,7 +5133,6 @@ def cli_set(sess: Session, args) -> int:
         return 1
     sess.ensure_backup()
     sess.cfg.write()
-    rebake_treat_shaders(sess, args.key)
     if args.no_reload:
         print(f"{args.key} set · saved (no reload)")
         return 0

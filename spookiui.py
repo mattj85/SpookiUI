@@ -2656,7 +2656,7 @@ _SHADER_TAIL_NEW = "fragColor = spooki_out(res, term);"
 # the second half of a `light:x,dark:y` theme, and the mask width to use.
 _SHADER_PRELUDE = """\
 const vec3 SPOOKI_LUMA = vec3(0.2126, 0.7152, 0.0722);
-const int SPOOKI_TAPS = 8;
+const int SPOOKI_TAPS = 16;
 
 // Per-channel distance, so a colour that merely matches the background's
 // brightness -- bright yellow text on a cream background, say -- is still told
@@ -2666,14 +2666,23 @@ float spooki_dist(vec3 a, vec3 b) {
     return max(max(d.r, d.g), d.b);
 }
 
-// Sample points, scattered along a low-discrepancy sequence rather than a grid.
-// A grid resonates with the character cell: pick the wrong spacing and every tap
-// lands on a row of glyphs, and the shader concludes the text colour IS the
+// Sample points. The first four are the window's extreme corners, which sit in
+// the padding Ghostty fills with the background colour and which glyphs can
+// never reach -- the nearest thing to a guaranteed answer on screen, and what
+// settles a screen so full of text that text is the majority. The rest are
+// scattered along a low-discrepancy sequence rather than laid out on a grid: a
+// grid resonates with the character cell, and at the wrong spacing every tap
+// lands on a row of glyphs and the shader concludes the text colour IS the
 // background. These offsets share no period with any text layout.
 vec3 spooki_tap(int i) {
-    float f = float(i);
-    return texture(iChannel0, vec2(fract(0.5 + f * 0.7548777),
-                                   fract(0.5 + f * 0.5698403))).rgb;
+    vec2 at;
+    if (i < 4) at = vec2((i == 0 || i == 2) ? 0.004 : 0.996,
+                         (i < 2) ? 0.004 : 0.996);
+    else {
+        float f = float(i - 4);
+        at = vec2(fract(0.5 + f * 0.7548777), fract(0.5 + f * 0.5698403));
+    }
+    return texture(iChannel0, at).rgb;
 }
 
 // What the terminal looks like right now, used only when we have no better
@@ -2709,14 +2718,20 @@ vec3 spooki_bg_resolve() {
     vec3 pick = SPOOKI_BG_A;
     if (SPOOKI_BG_B.r >= 0.0) {
         // A `light:x,dark:y` theme: the live half is whichever more of the
-        // screen looks like. A majority vote survives a split or an overlay
-        // covering up to half the window; picking by nearest sample would not.
-        int votes = 0;
+        // screen actually IS. Count only samples that match a half outright --
+        // asking which half each sample is merely *closer* to lets text decide
+        // it, and text leans the wrong way by construction, being dark on a
+        // light theme and light on a dark one. Pairs are often near-inverses
+        // (Aura and Aura Light swap their two colours exactly), so glyphs can
+        // match the other half perfectly; only area settles it.
+        int hitA = 0;
+        int hitB = 0;
         for (int i = 0; i < SPOOKI_TAPS; i++) {
             vec3 c = spooki_tap(i);
-            if (spooki_dist(c, SPOOKI_BG_A) < spooki_dist(c, SPOOKI_BG_B)) votes++;
+            if (spooki_dist(c, SPOOKI_BG_A) < SPOOKI_MASK_LO) hitA++;
+            else if (spooki_dist(c, SPOOKI_BG_B) < SPOOKI_MASK_LO) hitB++;
         }
-        pick = (votes * 2 >= SPOOKI_TAPS) ? SPOOKI_BG_A : SPOOKI_BG_B;
+        pick = (hitA >= hitB) ? SPOOKI_BG_A : SPOOKI_BG_B;
     }
     // Whichever we settled on, keep it only if some of the screen really does
     // look like it. The vote above is relative, so on its own it cannot tell

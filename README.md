@@ -298,14 +298,26 @@ They're designed to stay out of your way:
 - **All off by default** — nothing is enabled unless you ask.
 - **One at a time** — only a single treat can be active; enabling one turns off
   whichever was on, so background effects never stack.
-- **Text stays legible** — every treat composites *additively* through a tight
-  luminance mask, so only the darkest background pixels are tinted; your text,
-  cursor, and borders are left alone. Brightness is kept deliberately low.
+- **Text stays legible** — every treat composites through a tight luminance mask
+  that only tints pixels still showing your background colour; your text, cursor,
+  and borders are left alone. Brightness is kept deliberately low.
+- **Works with your theme, whatever it is** — the mask measures how far a pixel is
+  from your *actual* background colour, which SpookiUI reads out of your
+  configured theme, rather than assuming background means near-black. That matters
+  well beyond light themes: anything brighter than a very dark grey used to fall
+  outside the old mask, which quietly hid treats altogether on Dracula, Nord, One
+  Dark and Gruvbox. On a light theme a treat also switches from emitting light to
+  laying down ink — the same colours, absorbed instead of glowing, since adding a
+  glow to a white background would be invisible — tuned so a treat is no more or
+  less prominent than it is on a dark one. With a `theme = light:…,dark:…` pair
+  SpookiUI bakes in both and the shader follows whichever one is showing, so
+  treats keep up when the system flips between light and dark.
 - **Light on resources** — SpookiUI sets `custom-shader-animation = true`, which
   animates only the *focused* window. Open (and focus) another terminal and the
   treat pauses in the ones you're no longer looking at, so at most one window is
-  ever animating. Each treat is also deliberately cheap — one texture fetch and
-  small, fixed per-frame work.
+  ever animating. Each treat is also deliberately cheap — a handful of texture
+  fetches (one for the pixel, a fixed dozen more to read back the background
+  colour, which the texture cache serves) and small, fixed per-frame work.
 - **Non-destructive** — treats are namespaced under `shaders/spookiui/`, so any
   `custom-shader` you added yourself is preserved, and toggling follows the same
   validate → back up → write → reload → rollback discipline as every other edit.

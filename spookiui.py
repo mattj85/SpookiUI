@@ -622,6 +622,8 @@ class ConfigFile:
     def __init__(self, path: str):
         self.path = path
         self.lines: list[str] = []
+        # Optional hook run after every successful write; see Session.__init__.
+        self.after_write = None
         self.reload()
 
     def reload(self) -> None:
@@ -742,6 +744,8 @@ class ConfigFile:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, "w", encoding="utf-8") as fh:
             fh.write(text)
+        if self.after_write is not None:
+            self.after_write()
 
     def backup(self) -> str | None:
         """Make at most one backup per day (a safety net; the TUI also keeps an in-memory original for its own revert)."""
@@ -1005,6 +1009,51 @@ def theme_variant_name(value: str) -> str:
     return picks.get("dark") or picks.get("light") or first or value
 
 
+def theme_variant_names(value: str) -> list[str]:
+    """Every theme a `theme` value can resolve to. One for a plain theme; two for a
+    composite `light:A,dark:B`, which Ghostty switches between as the system
+    appearance changes -- so a treat shader has to be ready for either. A theme
+    whose own name contains a comma is left alone: only `light:`/`dark:` keys make
+    a value composite."""
+    value = value.strip()
+    parts = [p.strip() for p in value.split(",")]
+    keyed = [p for p in parts
+             if p.split(":", 1)[0].strip().lower() in ("light", "dark") and ":" in p]
+    if not keyed:
+        return [value] if value else []
+    names = []
+    for part in keyed:
+        _, _, name = part.partition(":")
+        name = name.strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def color_rgb(value: str) -> tuple[float, float, float] | None:
+    """A Ghostty colour literal as 0..1 RGB, or None if it isn't one we can read
+    (an X11 colour name, say). Accepts `#rgb`, `#rrggbb`, either without the `#`,
+    and the `rgb:rr/gg/bb` form Ghostty also takes."""
+    v = value.strip()
+    if v.lower().startswith("rgb:"):
+        parts = v[4:].split("/")
+        if len(parts) != 3:
+            return None
+        try:
+            return tuple(int(p, 16) / (16 ** len(p) - 1) for p in parts)  # type: ignore[return-value]
+        except (ValueError, ZeroDivisionError):
+            return None
+    v = v.lstrip("#").strip()
+    if len(v) == 3:
+        v = "".join(c * 2 for c in v)
+    if len(v) != 6:
+        return None
+    try:
+        return tuple(int(v[i:i + 2], 16) / 255.0 for i in (0, 2, 4))  # type: ignore[return-value]
+    except ValueError:
+        return None
+
+
 _THEME_COLOR_CACHE: dict[str, dict | None] = {}
 
 
@@ -1048,6 +1097,11 @@ class Session:
     def __init__(self):
         self.schema = load_schema()
         self.cfg = ConfigFile(config_path())
+        # Treat shaders have the theme's background colour baked in, so every
+        # path that rewrites the config -- profiles, light/dark toggle, reverts,
+        # resets, the theme picker's live preview and its cancel -- has to rewrite
+        # them too. One hook here, rather than a call at each of those sites.
+        self.cfg.after_write = lambda: rebake_treat_shaders(self)
         self.original_text = self.cfg.render()
         self.backup_path: str | None = None
         self.auto_apply = True
@@ -1573,8 +1627,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     vec3 green = vec3(0.15, 1.0, 0.30);
     vec3 rain = green * lit * 0.42 + vec3(0.80, 1.0, 0.85) * headGlow * 0.45;
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.14, lum);
+    float bgmask = spooki_bgmask(term.rgb);
 
     vec3 res = term.rgb + rain * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
@@ -1634,8 +1687,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     float pulse = 0.6 + 0.4 * sin(iTime * 3.0 + (bestNode.x + bestNode.y) * 1.7);
     vec3 pipe = col * (core * 0.55 + glow * 0.22) * pulse;
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    float bgmask = spooki_bgmask(term.rgb);
 
     vec3 res = term.rgb + pipe * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
@@ -1690,8 +1742,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         }
     }
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    float bgmask = spooki_bgmask(term.rgb);
     vec3 res = term.rgb + acc * 0.5 * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
 }
@@ -1716,8 +1767,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
     vec3 col = 0.5 + 0.5 * cos(6.2831 * (v + vec3(0.0, 0.33, 0.67)));
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    float bgmask = spooki_bgmask(term.rgb);
     vec3 res = term.rgb + col * 0.14 * bgmask;   // very faint wash
     fragColor = vec4(min(res, vec3(1.0)), term.a);
 }
@@ -1754,8 +1804,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     float hue = fract(0.03 * iTime);
     vec3 col = 0.5 + 0.5 * cos(6.2831 * (hue + vec3(0.0, 0.28, 0.55)));
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    float bgmask = spooki_bgmask(term.rgb);
     vec3 res = term.rgb + col * blob * 0.22 * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
 }
@@ -1795,8 +1844,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         }
     }
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    float bgmask = spooki_bgmask(term.rgb);
     vec3 res = term.rgb + acc * 0.6 * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
 }
@@ -1858,8 +1906,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     float ghost = ghost_body(gr, r, iTime * 3.0);
     acc += vec3(0.72, 0.80, 1.0) * ghost;
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    float bgmask = spooki_bgmask(term.rgb);
     vec3 res = term.rgb + acc * 0.7 * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
 }
@@ -1910,8 +1957,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         acc += mix(vec3(0.8, 0.55, 0.2), vec3(0.5, 0.3, 0.1), roll) * barrel;
     }
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    float bgmask = spooki_bgmask(term.rgb);
     vec3 res = term.rgb + acc * 0.6 * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
 }
@@ -2110,8 +2156,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     mario_draw(q, mc, ma);
     acc = mix(acc, mc, ma);
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    float bgmask = spooki_bgmask(term.rgb);
     vec3 res = term.rgb + acc * 0.6 * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
 }
@@ -2187,8 +2232,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         acc += vec3(0.70, 0.85, 1.0) * xin * xout * yline * (0.35 + 0.3 * shimmer);
     }
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    float bgmask = spooki_bgmask(term.rgb);
     vec3 res = term.rgb + acc * 0.6 * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
 }
@@ -2277,8 +2321,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     vec2 p = vec2(uv.x * aspect, uv.y);
 
     // Only draw over dark background pixels so text stays readable.
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.15, lum);
+    float bgmask = spooki_bgmask(term.rgb);
 
     // Composite solid sprites onto the terminal (screen y grows downward, so a
     // large y is low on screen). res ends as the fully-composited color.
@@ -2342,8 +2385,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         acc += vec3(0.72, 0.80, 1.0) * body * fade;
     }
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.14, lum);
+    float bgmask = spooki_bgmask(term.rgb);
 
     vec3 res = term.rgb + acc * 0.5 * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
@@ -2389,8 +2431,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         acc += col * (e1 + e2) * life;
     }
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.14, lum);
+    float bgmask = spooki_bgmask(term.rgb);
 
     vec3 res = term.rgb + acc * 0.7 * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
@@ -2429,8 +2470,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
             + webAt(uv, vec2(1.0, 1.0), aspect, iTime);    // bottom-right
     vec3 web = vec3(0.82, 0.86, 0.95) * clamp(w, 0.0, 1.0);
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.14, lum);
+    float bgmask = spooki_bgmask(term.rgb);
 
     vec3 res = term.rgb + web * 0.45 * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
@@ -2470,8 +2510,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
             + snowLayer(uv, aspect, iTime, 23.0, 0.9,  0.08);
     vec3 snow = vec3(0.95, 0.97, 1.0) * clamp(s, 0.0, 1.0);
 
-    float lum = dot(term.rgb, vec3(0.2126, 0.7152, 0.0722));
-    float bgmask = 1.0 - smoothstep(0.05, 0.14, lum);
+    float bgmask = spooki_bgmask(term.rgb);
 
     vec3 res = term.rgb + snow * 0.6 * bgmask;
     fragColor = vec4(min(res, vec3(1.0)), term.a);
@@ -2601,6 +2640,161 @@ def treat_shader_path(t: Treat) -> str:
 _SHADER_TAIL = "fragColor = vec4(min(res, vec3(1.0)), term.a);"
 _SHADER_TAIL_NEW = "fragColor = spooki_out(res, term);"
 
+# Shared theme-awareness helpers, prepended to every treat.
+#
+# Treats paint by adding light over dark pixels, which assumes a dark theme
+# twice over: the "is this pixel background?" test assumed background means
+# dark, and adding a glow to a near-white pixel does nothing anyway. Worse, the
+# old test compared against absolute black, so it faded treats out on any theme
+# whose background isn't near-black -- on Dracula, Nord, One Dark or Gruvbox it
+# masked them away entirely. These helpers replace it with a comparison against
+# the background colour SpookiUI resolved from your theme, which answers both
+# questions at once and needs no per-treat light-mode artwork.
+#
+# compose_shader bakes that colour in as SPOOKI_BG_A (Ghostty custom shaders
+# take no user uniforms, so constants are the only way in), plus SPOOKI_BG_B for
+# the second half of a `light:x,dark:y` theme, and the mask width to use.
+_SHADER_PRELUDE = """\
+const vec3 SPOOKI_LUMA = vec3(0.2126, 0.7152, 0.0722);
+const int SPOOKI_TAPS = 16;
+// How close a sample must sit to a baked colour to count as that background.
+const float SPOOKI_BG_EPS = 0.02;
+
+// Per-channel distance, so a colour that merely matches the background's
+// brightness -- bright yellow text on a cream background, say -- is still told
+// apart from it and still masked out.
+float spooki_dist(vec3 a, vec3 b) {
+    vec3 d = abs(a - b);
+    return max(max(d.r, d.g), d.b);
+}
+
+// Sample points. The first four are the window's extreme corners, which sit in
+// the padding Ghostty fills with the background colour and which glyphs can
+// never reach -- the nearest thing to a guaranteed answer on screen, and what
+// settles a screen so full of text that text is the majority. The rest are
+// scattered along a low-discrepancy sequence rather than laid out on a grid: a
+// grid resonates with the character cell, and at the wrong spacing every tap
+// lands on a row of glyphs and the shader concludes the text colour IS the
+// background. These offsets share no period with any text layout.
+vec3 spooki_tap(int i) {
+    vec2 at;
+    if (i < 4) at = vec2((i == 0 || i == 2) ? 0.004 : 0.996,
+                         (i < 2) ? 0.004 : 0.996);
+    else {
+        float f = float(i - 4);
+        at = vec2(fract(0.5 + f * 0.7548777), fract(0.5 + f * 0.5698403));
+    }
+    return texture(iChannel0, at).rgb;
+}
+
+// What the terminal looks like right now, used only when we have no better
+// answer. The most common colour on screen is the background, so this takes the
+// densest cluster of samples rather than their average: text and background
+// average out to a colour that exists nowhere, and a min or max would hand the
+// answer to the brightest statusline or the darkest shadow.
+vec3 spooki_bg_estimate() {
+    vec3 taps[SPOOKI_TAPS];
+    for (int i = 0; i < SPOOKI_TAPS; i++) taps[i] = spooki_tap(i);
+    int best = 0;
+    int bestCount = -1;
+    for (int i = 0; i < SPOOKI_TAPS; i++) {
+        int count = 0;
+        for (int j = 0; j < SPOOKI_TAPS; j++)
+            if (spooki_dist(taps[i], taps[j]) < 0.2) count++;
+        if (count > bestCount) { bestCount = count; best = i; }
+    }
+    vec3 sum = vec3(0.0);
+    float n = 0.0;
+    for (int j = 0; j < SPOOKI_TAPS; j++)
+        if (spooki_dist(taps[best], taps[j]) < 0.2) { sum += taps[j]; n += 1.0; }
+    return sum / max(n, 1.0);
+}
+
+// The background colour to measure pixels against. The baked value wins: it is
+// exact, where anything read off the screen is a guess about live content. We
+// abandon it only when nothing on screen looks like it at all, which means the
+// config changed outside SpookiUI, or this build hands the shader colours in a
+// different space than the one we baked.
+vec3 spooki_bg_resolve() {
+    if (SPOOKI_BG_A.r < 0.0) return spooki_bg_estimate();
+    vec3 pick = SPOOKI_BG_A;
+    if (SPOOKI_BG_B.r >= 0.0) {
+        // A `light:x,dark:y` theme: the live half is whichever more of the
+        // screen actually IS. Count only samples that match a half outright --
+        // asking which half each sample is merely *closer* to lets text decide
+        // it, and text leans the wrong way by construction, being dark on a
+        // light theme and light on a dark one. Pairs are often near-inverses
+        // (Aura and Aura Light swap their two colours exactly), so glyphs can
+        // match the other half perfectly; only area settles it.
+        int hitA = 0;
+        int hitB = 0;
+        for (int i = 0; i < SPOOKI_TAPS; i++) {
+            vec3 c = spooki_tap(i);
+            if (spooki_dist(c, SPOOKI_BG_A) < SPOOKI_BG_EPS) hitA++;
+            else if (spooki_dist(c, SPOOKI_BG_B) < SPOOKI_BG_EPS) hitB++;
+        }
+        pick = (hitA >= hitB) ? SPOOKI_BG_A : SPOOKI_BG_B;
+    }
+    // Whichever we settled on, keep it only if some of the screen really does
+    // look like it. The vote above is relative, so on its own it cannot tell
+    // "this half of the pair" from "neither half". Judge that as strictly as the
+    // mask judges background: a colour the mask would reject paints nothing at
+    // all, which is the failure this whole change exists to remove. One clear
+    // match is enough -- demanding a share of the screen instead would hand the
+    // answer to any window-filling overlay and make treats blink in and out.
+    for (int i = 0; i < SPOOKI_TAPS; i++)
+        if (spooki_dist(spooki_tap(i), pick) < SPOOKI_BG_EPS) return pick;
+    return spooki_bg_estimate();
+}
+
+// 1.0 where the pixel is still background, 0.0 over a glyph, so treats never
+// paint over text. Measuring distance FROM the background rather than absolute
+// darkness is what makes this theme-agnostic: it masks text whichever way it
+// contrasts, bright glyphs on dark themes and dark glyphs on light ones.
+//
+// The ramp is scaled to the theme's own text-to-background contrast rather than
+// being a fixed narrow window, because a glyph does not end abruptly: antialiased
+// edge pixels are part background, part text, and sweep the entire range between
+// the two colours. Cutting them off treats a mostly-background pixel as solid
+// text, which rings every glyph with an unpainted halo and makes the effect look
+// like it is stencilled around the words. Fading out in step with how much of
+// the pixel the glyph actually covers is the same thing the glyph's own
+// antialiasing is doing, so the effect passes behind text cleanly.
+float spooki_bgmask(vec3 term) {
+    return 1.0 - smoothstep(SPOOKI_MASK_LO, SPOOKI_MASK_HI,
+                            spooki_dist(term, spooki_bg_resolve()));
+}
+
+// Re-express light a treat wanted to EMIT as pigment it ABSORBS instead: same
+// hue, darker rather than brighter. Adding a pale glow to a white background is
+// invisible, but the same glow as ink reads exactly as intended, so every treat
+// gets a light-theme look for free. Treats that only darken are already fine and
+// pass through untouched.
+vec3 spooki_ink(vec3 res, vec3 term) {
+    vec3 d = max(res - term, vec3(0.0));       // the light the treat wanted to add
+    float a = max(max(d.r, d.g), d.b);
+    if (a <= 0.0) return res;
+    vec3 hue = d / a;
+    // Deepen the hue so a pale glow becomes real pigment, and keep a floor so an
+    // achromatic effect (snow, say) still leaves a grey mark rather than nothing.
+    vec3 pigment = pow(hue, vec3(2.0)) * 0.6;
+    // Absorb exactly as much light as the treat meant to emit, so a treat is
+    // neither shy nor overbearing on a light theme relative to a dark one.
+    float k = a * dot(hue, SPOOKI_LUMA)
+            / max(1.0 - dot(pigment, SPOOKI_LUMA), 0.05);
+    return min(res, term) * mix(vec3(1.0), pigment, clamp(k, 0.0, 1.0));
+}
+
+// Emit on a dark theme, ink on a light one. A hard switch on purpose: this is
+// one decision for the whole frame, and blending the two halfway would have them
+// cancel -- the emitted and absorbed versions pull the same pixel opposite ways,
+// so a mid-grey theme would come out blank.
+bool spooki_is_light() {
+    return dot(spooki_bg_resolve(), SPOOKI_LUMA) > 0.5;
+}
+
+"""
+
 _FOCUS_EPILOGUE = """\
 // added by SpookiUI: the treat animation only ever plays in the focused window.
 // `iFocus` is 1.0 while focused, 0.0 while unfocused. When this window is
@@ -2617,51 +2811,152 @@ vec4 spooki_out(vec3 res, vec4 term) {
         }
         return term;                                               // plain, no effect
     }
-    vec3 fx = term.rgb + (res - term.rgb) * SPOOKI_VIBRANCY;    // scale the effect
-    return vec4(min(fx, vec3(1.0)), term.a);
+    if (res == term.rgb) return term;      // the treat painted nothing here
+    vec3 lit = spooki_is_light() ? spooki_ink(res, term.rgb) : res;  // suit the theme
+    vec3 fx = term.rgb + (lit - term.rgb) * SPOOKI_VIBRANCY;    // scale the effect
+    return vec4(clamp(fx, vec3(0.0), vec3(1.0)), term.a);
 }
 
 """
 
 _PLAIN_EPILOGUE = """\
 vec4 spooki_out(vec3 res, vec4 term) {
-    vec3 fx = term.rgb + (res - term.rgb) * SPOOKI_VIBRANCY;    // scale the effect
-    return vec4(min(fx, vec3(1.0)), term.a);
+    if (res == term.rgb) return term;      // the treat painted nothing here
+    vec3 lit = spooki_is_light() ? spooki_ink(res, term.rgb) : res;  // suit the theme
+    vec3 fx = term.rgb + (lit - term.rgb) * SPOOKI_VIBRANCY;    // scale the effect
+    return vec4(clamp(fx, vec3(0.0), vec3(1.0)), term.a);
 }
 
 """
 
 
-def compose_shader(t: Treat, vibrancy: float = 1.0, dim: bool = True) -> str:
-    """The full GLSL written to disk: the treat's effect wired through the shared `spooki_out` helper, scaled by `vibrancy` (baked in as a GLSL const, since Ghostty custom shaders can't take user uniforms)."""
+# The mask fades a treat out across the first _MASK_SPAN of the distance from
+# your background colour to your text colour. Half means a pixel a glyph
+# half-covers gets no effect, and everything below that fades in smoothly, which
+# is what keeps antialiased glyph edges from being ringed with unpainted halos.
+# Anything with real contrast -- any actual text -- is well past it and untouched.
+_MASK_SPAN = 0.5
+# Used when a theme doesn't name a foreground, or names one we can't parse.
+_DEFAULT_CONTRAST = 0.6
+
+
+def _contrast(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    return max(abs(x - y) for x, y in zip(a, b))
+
+
+def theme_colors_for_shader(sess: "Session") -> tuple[list[tuple[float, float, float]], float]:
+    """What a treat needs to know about your colours: the background colour(s) to
+    measure pixels against, and how far text sits from them.
+
+    Usually one background; two for a `light:A,dark:B` theme, where only the
+    running terminal knows which is live. Empty when we genuinely can't tell,
+    which leaves the shader to work it out from what's on screen.
+
+    The contrast is what the mask fades out over. It has to come from the theme
+    because it differs wildly between them -- Solarized Dark's text sits at 0.51
+    where Aura's sits at 0.85 -- and a fixed distance that looks right on one
+    reads as a hard stencil edge around every glyph on another."""
+    # Ghostty applies `theme` as an include at its position in the file, so which
+    # of the two wins depends on their order, not on which one is a theme.
+    bg_at = sess.cfg.indices_of("background")
+    theme_at = sess.cfg.indices_of("theme")
+    fg_override = color_rgb(sess.cfg.get_value("foreground") or "")
+    override = sess.cfg.get_value("background")
+    if override and (not theme_at or (bg_at and bg_at[-1] > theme_at[-1])):
+        # An explicit background we can't read (an X11 colour name) means we know
+        # the theme is NOT the answer, so guessing it would be worse than saying
+        # nothing and letting the shader read the colour off the screen.
+        rgb = color_rgb(override)
+        if rgb is None:
+            return [], _DEFAULT_CONTRAST
+        return [rgb], (_contrast(rgb, fg_override) if fg_override
+                       else _DEFAULT_CONTRAST)
+
+    theme_val = sess.effective("theme")
+    colors: list[tuple[float, float, float]] = []
+    contrasts: list[float] = []
+    for name in theme_variant_names(theme_val):
+        parsed = parse_theme_colors(name)
+        rgb = color_rgb(parsed["background"]) if parsed and parsed["background"] else None
+        if rgb is None or any(_contrast(rgb, seen) <= 0.02 for seen in colors):
+            continue
+        colors.append(rgb)
+        fg = fg_override or (color_rgb(parsed["foreground"]) if parsed["foreground"]
+                             else None)
+        contrasts.append(_contrast(rgb, fg) if fg else _DEFAULT_CONTRAST)
+    if colors:
+        # The tighter of a pair, so neither half of a light/dark theme can end up
+        # with a mask that reaches into the other's text.
+        return colors[:2], max(min(contrasts[:2]), 0.2)
+    if theme_val:
+        return [], _DEFAULT_CONTRAST   # a theme is set but unreadable; don't guess
+
+    opt = sess.schema.get("background")
+    rgb = color_rgb(opt.default) if opt and opt.default else None
+    if rgb is None:
+        return [], _DEFAULT_CONTRAST
+    fgo = sess.schema.get("foreground")
+    fg = fg_override or (color_rgb(fgo.default) if fgo and fgo.default else None)
+    return [rgb], (_contrast(rgb, fg) if fg else _DEFAULT_CONTRAST)
+
+
+def _glsl_vec3(rgb: tuple[float, float, float] | None) -> str:
+    if rgb is None:
+        return "vec3(-1.0)"
+    return "vec3({:.4f}, {:.4f}, {:.4f})".format(*rgb)
+
+
+def compose_shader(t: Treat, vibrancy: float = 1.0, dim: bool = True,
+                   bg_colors: list[tuple[float, float, float]] | None = None,
+                   contrast: float = _DEFAULT_CONTRAST) -> str:
+    """The full GLSL written to disk: the treat's effect wired through the shared `spooki_out` helper, scaled by `vibrancy` (baked in as a GLSL const, since Ghostty custom shaders can't take user uniforms). `bg_colors` and `contrast` are baked the same way so the treat can tell background from text and suit a light theme; see `_SHADER_PRELUDE`."""
     epilogue = _FOCUS_EPILOGUE if SUPPORTS_SHADER_FOCUS else _PLAIN_EPILOGUE
     body = t.glsl.replace(_SHADER_TAIL, _SHADER_TAIL_NEW)
+    bg = list(bg_colors or [])
     header = (f"const float SPOOKI_VIBRANCY = {max(0.0, min(1.0, vibrancy)):.2f};\n"
-              f"const float SPOOKI_DIM = {1.0 if dim else 0.0:.1f};\n")
+              f"const float SPOOKI_DIM = {1.0 if dim else 0.0:.1f};\n"
+              f"const vec3 SPOOKI_BG_A = {_glsl_vec3(bg[0] if bg else None)};\n"
+              f"const vec3 SPOOKI_BG_B = {_glsl_vec3(bg[1] if len(bg) > 1 else None)};\n"
+              f"const float SPOOKI_MASK_LO = 0.0000;\n"
+              f"const float SPOOKI_MASK_HI = {max(contrast, 0.2) * _MASK_SPAN:.4f};\n")
     if SUPPORTS_SHADER_FOCUS:
         header = "#define SPOOKI_TIME (iTime - iTimeFocus)\n" + header
         body = re.sub(r"\biTime\b", "SPOOKI_TIME", body)
-    return header + "\n" + epilogue + body
+    return header + "\n" + _SHADER_PRELUDE + epilogue + body
+
+
+def _write_shader_atomic(path: str, source: str) -> None:
+    """Write a shader in one step. Ghostty is told to reload immediately after,
+    and these are now rewritten as often as every keystroke in the theme picker,
+    so it must never be possible to read a half-written file: a truncated shader
+    fails to compile and the treat just disappears."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(source)
+    os.replace(tmp, path)
 
 
 def write_treat_shader(t: Treat, vibrancy: float | None = None,
-                       dim: bool | None = None) -> str:
-    """Write a treat's GLSL to disk (idempotent), returning the absolute path."""
+                       dim: bool | None = None,
+                       sess: "Session | None" = None) -> str:
+    """Write a treat's GLSL to disk (idempotent), returning the absolute path.
+    Pass `sess` so the treat can be tuned to the configured theme."""
     if vibrancy is None:
         vibrancy = get_treat_vibrancy()
     if dim is None:
         dim = get_dim_unfocused()
     path = treat_shader_path(t)
     os.makedirs(shaders_dir(), exist_ok=True)
-    source = compose_shader(t, vibrancy, dim)
+    colors, contrast = (theme_colors_for_shader(sess) if sess
+                        else ([], _DEFAULT_CONTRAST))
+    source = compose_shader(t, vibrancy, dim, colors, contrast)
     try:
         with open(path, encoding="utf-8") as fh:
             if fh.read() == source:
                 return path
     except OSError:
         pass
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(source)
+    _write_shader_atomic(path, source)
     return path
 
 
@@ -2681,10 +2976,13 @@ def dim_shader_path() -> str:
     return os.path.join(shaders_dir(), "_dim.glsl")
 
 
-def write_dim_shader() -> str:
+def write_dim_shader(sess: "Session | None" = None) -> str:
     """Write the dim-only shader to disk (idempotent), returning its path."""
     os.makedirs(shaders_dir(), exist_ok=True)
-    source = compose_shader(_DIM_TREAT, vibrancy=1.0, dim=True)
+    colors, contrast = (theme_colors_for_shader(sess) if sess
+                        else ([], _DEFAULT_CONTRAST))
+    source = compose_shader(_DIM_TREAT, vibrancy=1.0, dim=True,
+                            bg_colors=colors, contrast=contrast)
     path = dim_shader_path()
     try:
         with open(path, encoding="utf-8") as fh:
@@ -2692,8 +2990,7 @@ def write_dim_shader() -> str:
                 return path
     except OSError:
         pass
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(source)
+    _write_shader_atomic(path, source)
     return path
 
 
@@ -2701,6 +2998,20 @@ def _is_treat_path(value: str) -> bool:
     """Whether a `custom-shader` value points at one of SpookiUI's own treats."""
     base = os.path.abspath(shaders_dir()) + os.sep
     return os.path.abspath(os.path.expanduser(value.strip())).startswith(base)
+
+
+def rebake_treat_shaders(sess: "Session") -> None:
+    """Rewrite the active treat so it matches the colours now configured. The
+    background colour is baked into the shader, so any change to `theme` or
+    `background` -- including scrolling the theme picker, which applies each
+    highlighted theme live, and backing out of it again -- leaves the treat
+    measuring against a colour that is no longer on screen. Writing is idempotent
+    and content-compared, so running this after every config write is cheap."""
+    for slug in enabled_treat_slugs(sess):
+        try:
+            write_treat_shader(TREAT_BY_SLUG[slug], sess=sess)
+        except OSError:
+            pass       # a treat that briefly looks wrong beats blocking the edit
 
 
 def enabled_treat_slugs(sess: "Session") -> list[str]:
@@ -2720,10 +3031,10 @@ def apply_treat_lines(sess: "Session", slugs) -> None:
     dim_only = (chosen is None and get_dim_unfocused() and SUPPORTS_SHADER_FOCUS)
     ours: list[str] = []
     if chosen:
-        write_treat_shader(TREAT_BY_SLUG[chosen])
+        write_treat_shader(TREAT_BY_SLUG[chosen], sess=sess)
         ours.append(treat_shader_path(TREAT_BY_SLUG[chosen]))
     elif dim_only:
-        write_dim_shader()
+        write_dim_shader(sess)
         ours.append(dim_shader_path())
     foreign = [v for v in sess.cfg.get_values("custom-shader")
                if not _is_treat_path(v)]
@@ -2771,7 +3082,7 @@ def set_treat_vibrancy(sess: "Session", percent: int) -> tuple[bool, str]:
         return True, f"vibrancy set to {percent}% (no treat active)"
     try:
         for slug in active:
-            write_treat_shader(TREAT_BY_SLUG[slug])
+            write_treat_shader(TREAT_BY_SLUG[slug], sess=sess)
     except OSError as e:
         return False, f"could not write shader file: {e}"
     if sess.auto_apply and CAN_RELOAD:

@@ -298,9 +298,12 @@ They're designed to stay out of your way:
 - **All off by default** — nothing is enabled unless you ask.
 - **One at a time** — only a single treat can be active; enabling one turns off
   whichever was on, so background effects never stack.
-- **Text stays legible** — every treat composites through a tight luminance mask
-  that only tints pixels still showing your background colour; your text, cursor,
-  and borders are left alone. Brightness is kept deliberately low.
+- **Text stays legible** — every treat composites through a mask that only tints
+  pixels still showing your background colour; your text, cursor, and borders are
+  left alone. The mask fades out across your theme's own text-to-background
+  contrast rather than at a fixed cutoff, so it follows the same edges your font's
+  antialiasing draws and a treat passes behind words instead of being stencilled
+  around them. Brightness is kept deliberately low.
 - **Works with your theme, whatever it is** — the mask measures how far a pixel is
   from your *actual* background colour, which SpookiUI reads out of your
   configured theme, rather than assuming background means near-black. That matters

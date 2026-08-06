@@ -2657,6 +2657,8 @@ _SHADER_TAIL_NEW = "fragColor = spooki_out(res, term);"
 _SHADER_PRELUDE = """\
 const vec3 SPOOKI_LUMA = vec3(0.2126, 0.7152, 0.0722);
 const int SPOOKI_TAPS = 16;
+// How close a sample must sit to a baked colour to count as that background.
+const float SPOOKI_BG_EPS = 0.02;
 
 // Per-channel distance, so a colour that merely matches the background's
 // brightness -- bright yellow text on a cream background, say -- is still told
@@ -2728,8 +2730,8 @@ vec3 spooki_bg_resolve() {
         int hitB = 0;
         for (int i = 0; i < SPOOKI_TAPS; i++) {
             vec3 c = spooki_tap(i);
-            if (spooki_dist(c, SPOOKI_BG_A) < SPOOKI_MASK_LO) hitA++;
-            else if (spooki_dist(c, SPOOKI_BG_B) < SPOOKI_MASK_LO) hitB++;
+            if (spooki_dist(c, SPOOKI_BG_A) < SPOOKI_BG_EPS) hitA++;
+            else if (spooki_dist(c, SPOOKI_BG_B) < SPOOKI_BG_EPS) hitB++;
         }
         pick = (hitA >= hitB) ? SPOOKI_BG_A : SPOOKI_BG_B;
     }
@@ -2741,16 +2743,23 @@ vec3 spooki_bg_resolve() {
     // match is enough -- demanding a share of the screen instead would hand the
     // answer to any window-filling overlay and make treats blink in and out.
     for (int i = 0; i < SPOOKI_TAPS; i++)
-        if (spooki_dist(spooki_tap(i), pick) < SPOOKI_MASK_LO) return pick;
+        if (spooki_dist(spooki_tap(i), pick) < SPOOKI_BG_EPS) return pick;
     return spooki_bg_estimate();
 }
 
 // 1.0 where the pixel is still background, 0.0 over a glyph, so treats never
 // paint over text. Measuring distance FROM the background rather than absolute
 // darkness is what makes this theme-agnostic: it masks text whichever way it
-// contrasts, and because the background colour is known exactly the window can
-// be tight enough to spare dim, low-contrast text that a brightness test alone
-// would mistake for background.
+// contrasts, bright glyphs on dark themes and dark glyphs on light ones.
+//
+// The ramp is scaled to the theme's own text-to-background contrast rather than
+// being a fixed narrow window, because a glyph does not end abruptly: antialiased
+// edge pixels are part background, part text, and sweep the entire range between
+// the two colours. Cutting them off treats a mostly-background pixel as solid
+// text, which rings every glyph with an unpainted halo and makes the effect look
+// like it is stencilled around the words. Fading out in step with how much of
+// the pixel the glyph actually covers is the same thing the glyph's own
+// antialiasing is doing, so the effect passes behind text cleanly.
 float spooki_bgmask(vec3 term) {
     return 1.0 - smoothstep(SPOOKI_MASK_LO, SPOOKI_MASK_HI,
                             spooki_dist(term, spooki_bg_resolve()));
@@ -2821,41 +2830,74 @@ vec4 spooki_out(vec3 res, vec4 term) {
 """
 
 
-def background_colors(sess: "Session") -> list[tuple[float, float, float]]:
-    """The background colour(s) a treat should expect, so it can tell background
-    from text and choose whether to paint in light or in ink. Usually one; two for
-    a `light:A,dark:B` theme, where only the running terminal knows which is live.
-    Empty when we genuinely can't tell, which leaves the shader to work it out from
-    what's on screen."""
+# The mask fades a treat out across the first _MASK_SPAN of the distance from
+# your background colour to your text colour. Half means a pixel a glyph
+# half-covers gets no effect, and everything below that fades in smoothly, which
+# is what keeps antialiased glyph edges from being ringed with unpainted halos.
+# Anything with real contrast -- any actual text -- is well past it and untouched.
+_MASK_SPAN = 0.5
+# Used when a theme doesn't name a foreground, or names one we can't parse.
+_DEFAULT_CONTRAST = 0.6
+
+
+def _contrast(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    return max(abs(x - y) for x, y in zip(a, b))
+
+
+def theme_colors_for_shader(sess: "Session") -> tuple[list[tuple[float, float, float]], float]:
+    """What a treat needs to know about your colours: the background colour(s) to
+    measure pixels against, and how far text sits from them.
+
+    Usually one background; two for a `light:A,dark:B` theme, where only the
+    running terminal knows which is live. Empty when we genuinely can't tell,
+    which leaves the shader to work it out from what's on screen.
+
+    The contrast is what the mask fades out over. It has to come from the theme
+    because it differs wildly between them -- Solarized Dark's text sits at 0.51
+    where Aura's sits at 0.85 -- and a fixed distance that looks right on one
+    reads as a hard stencil edge around every glyph on another."""
     # Ghostty applies `theme` as an include at its position in the file, so which
     # of the two wins depends on their order, not on which one is a theme.
     bg_at = sess.cfg.indices_of("background")
     theme_at = sess.cfg.indices_of("theme")
+    fg_override = color_rgb(sess.cfg.get_value("foreground") or "")
     override = sess.cfg.get_value("background")
     if override and (not theme_at or (bg_at and bg_at[-1] > theme_at[-1])):
         # An explicit background we can't read (an X11 colour name) means we know
         # the theme is NOT the answer, so guessing it would be worse than saying
         # nothing and letting the shader read the colour off the screen.
         rgb = color_rgb(override)
-        return [rgb] if rgb is not None else []
+        if rgb is None:
+            return [], _DEFAULT_CONTRAST
+        return [rgb], (_contrast(rgb, fg_override) if fg_override
+                       else _DEFAULT_CONTRAST)
 
     theme_val = sess.effective("theme")
     colors: list[tuple[float, float, float]] = []
+    contrasts: list[float] = []
     for name in theme_variant_names(theme_val):
         parsed = parse_theme_colors(name)
-        bg = parsed.get("background") if parsed else None
-        rgb = color_rgb(bg) if bg else None
-        if rgb is not None and all(max(abs(a - b) for a, b in zip(rgb, seen)) > 0.02
-                                   for seen in colors):
-            colors.append(rgb)
+        rgb = color_rgb(parsed["background"]) if parsed and parsed["background"] else None
+        if rgb is None or any(_contrast(rgb, seen) <= 0.02 for seen in colors):
+            continue
+        colors.append(rgb)
+        fg = fg_override or (color_rgb(parsed["foreground"]) if parsed["foreground"]
+                             else None)
+        contrasts.append(_contrast(rgb, fg) if fg else _DEFAULT_CONTRAST)
     if colors:
-        return colors[:2]
+        # The tighter of a pair, so neither half of a light/dark theme can end up
+        # with a mask that reaches into the other's text.
+        return colors[:2], max(min(contrasts[:2]), 0.2)
     if theme_val:
-        return []      # a theme is set but we can't read it; don't guess a default
+        return [], _DEFAULT_CONTRAST   # a theme is set but unreadable; don't guess
 
     opt = sess.schema.get("background")
     rgb = color_rgb(opt.default) if opt and opt.default else None
-    return [rgb] if rgb is not None else []
+    if rgb is None:
+        return [], _DEFAULT_CONTRAST
+    fgo = sess.schema.get("foreground")
+    fg = fg_override or (color_rgb(fgo.default) if fgo and fgo.default else None)
+    return [rgb], (_contrast(rgb, fg) if fg else _DEFAULT_CONTRAST)
 
 
 def _glsl_vec3(rgb: tuple[float, float, float] | None) -> str:
@@ -2864,27 +2906,19 @@ def _glsl_vec3(rgb: tuple[float, float, float] | None) -> str:
     return "vec3({:.4f}, {:.4f}, {:.4f})".format(*rgb)
 
 
-# How far a pixel may sit from the background colour and still count as
-# background. Tight when we know that colour exactly, so dim low-contrast text
-# is still recognised as text; wider when the shader has to estimate it, where
-# being too strict would mask the treat away entirely.
-_MASK_EXACT = (0.015, 0.045)
-_MASK_ESTIMATED = (0.04, 0.12)
-
-
 def compose_shader(t: Treat, vibrancy: float = 1.0, dim: bool = True,
-                   bg_colors: list[tuple[float, float, float]] | None = None) -> str:
-    """The full GLSL written to disk: the treat's effect wired through the shared `spooki_out` helper, scaled by `vibrancy` (baked in as a GLSL const, since Ghostty custom shaders can't take user uniforms). `bg_colors` is baked the same way so the treat can tell background from text and suit a light theme; see `_SHADER_PRELUDE`."""
+                   bg_colors: list[tuple[float, float, float]] | None = None,
+                   contrast: float = _DEFAULT_CONTRAST) -> str:
+    """The full GLSL written to disk: the treat's effect wired through the shared `spooki_out` helper, scaled by `vibrancy` (baked in as a GLSL const, since Ghostty custom shaders can't take user uniforms). `bg_colors` and `contrast` are baked the same way so the treat can tell background from text and suit a light theme; see `_SHADER_PRELUDE`."""
     epilogue = _FOCUS_EPILOGUE if SUPPORTS_SHADER_FOCUS else _PLAIN_EPILOGUE
     body = t.glsl.replace(_SHADER_TAIL, _SHADER_TAIL_NEW)
     bg = list(bg_colors or [])
-    lo, hi = _MASK_EXACT if bg else _MASK_ESTIMATED
     header = (f"const float SPOOKI_VIBRANCY = {max(0.0, min(1.0, vibrancy)):.2f};\n"
               f"const float SPOOKI_DIM = {1.0 if dim else 0.0:.1f};\n"
               f"const vec3 SPOOKI_BG_A = {_glsl_vec3(bg[0] if bg else None)};\n"
               f"const vec3 SPOOKI_BG_B = {_glsl_vec3(bg[1] if len(bg) > 1 else None)};\n"
-              f"const float SPOOKI_MASK_LO = {lo:.4f};\n"
-              f"const float SPOOKI_MASK_HI = {hi:.4f};\n")
+              f"const float SPOOKI_MASK_LO = 0.0000;\n"
+              f"const float SPOOKI_MASK_HI = {max(contrast, 0.2) * _MASK_SPAN:.4f};\n")
     if SUPPORTS_SHADER_FOCUS:
         header = "#define SPOOKI_TIME (iTime - iTimeFocus)\n" + header
         body = re.sub(r"\biTime\b", "SPOOKI_TIME", body)
@@ -2913,8 +2947,9 @@ def write_treat_shader(t: Treat, vibrancy: float | None = None,
         dim = get_dim_unfocused()
     path = treat_shader_path(t)
     os.makedirs(shaders_dir(), exist_ok=True)
-    source = compose_shader(t, vibrancy, dim,
-                            background_colors(sess) if sess else None)
+    colors, contrast = (theme_colors_for_shader(sess) if sess
+                        else ([], _DEFAULT_CONTRAST))
+    source = compose_shader(t, vibrancy, dim, colors, contrast)
     try:
         with open(path, encoding="utf-8") as fh:
             if fh.read() == source:
@@ -2944,8 +2979,10 @@ def dim_shader_path() -> str:
 def write_dim_shader(sess: "Session | None" = None) -> str:
     """Write the dim-only shader to disk (idempotent), returning its path."""
     os.makedirs(shaders_dir(), exist_ok=True)
+    colors, contrast = (theme_colors_for_shader(sess) if sess
+                        else ([], _DEFAULT_CONTRAST))
     source = compose_shader(_DIM_TREAT, vibrancy=1.0, dim=True,
-                            bg_colors=background_colors(sess) if sess else None)
+                            bg_colors=colors, contrast=contrast)
     path = dim_shader_path()
     try:
         with open(path, encoding="utf-8") as fh:
